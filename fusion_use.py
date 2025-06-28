@@ -6,30 +6,30 @@ import os
 import numpy as np
 import random
 
+class CNNTimeSeries(nn.Module):
+    def __init__(self, num_features, lookback):
+        super(CNNTimeSeries, self).__init__()
+        self.conv1 = nn.Conv1d(in_channels=num_features, out_channels=64, kernel_size=2)
+        self.conv2 = nn.Conv1d(in_channels=64, out_channels=32, kernel_size=2)
+        self.relu = nn.ReLU()
+        self.flatten_size = self._get_flatten_size(num_features, lookback)
+        self.fc1 = nn.Linear(self.flatten_size, 50)
+        self.fc2 = nn.Linear(50, lookback)
+
+    def _get_flatten_size(self, num_features, lookback):
+        x = torch.zeros(1, num_features, lookback)
+        x = self.relu(self.conv1(x))
+        x = self.relu(self.conv2(x))
+        return x.numel()
+
+    def forward(self, x):
+        x = self.relu(self.conv1(x))
+        x = self.relu(self.conv2(x))
+        x = x.view(x.size(0), -1)
+        x = self.relu(self.fc1(x))
+        return self.fc2(x)
+        
 def main():
-    class CNNTimeSeries(nn.Module):
-        def __init__(self, num_features, lookback):
-            super(CNNTimeSeries, self).__init__()
-            self.conv1 = nn.Conv1d(in_channels=num_features, out_channels=64, kernel_size=2)
-            self.conv2 = nn.Conv1d(in_channels=64, out_channels=32, kernel_size=2)
-            self.relu = nn.ReLU()
-            self.flatten_size = self._get_flatten_size(num_features, lookback)
-            self.fc1 = nn.Linear(self.flatten_size, 50)
-            self.fc2 = nn.Linear(50, lookback)
-    
-        def _get_flatten_size(self, num_features, lookback):
-            x = torch.zeros(1, num_features, lookback)
-            x = self.relu(self.conv1(x))
-            x = self.relu(self.conv2(x))
-            return x.numel()
-    
-        def forward(self, x):
-            x = self.relu(self.conv1(x))
-            x = self.relu(self.conv2(x))
-            x = x.view(x.size(0), -1)
-            x = self.relu(self.fc1(x))
-            return self.fc2(x)
-    
     # Load model
     # model = torch.load('full_model_new_loss.pth')
     model = torch.load('full_model_new_loss.pth', weights_only=False)
