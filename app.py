@@ -1,3 +1,5 @@
+from STIB_dataset_generator import main as generate_dataset
+from fusion_use import main as run_model
 import streamlit as st
 import pandas as pd
 import folium
@@ -32,11 +34,11 @@ col1, col2, col3 = st.columns([2, 3, 2])
 with col2:
     if st.button("🚦 Update Data & Predict (Click Me!)"):
         with st.spinner('⏳ Generating latest dataset (please wait)...'):
-            subprocess.run(['python3', 'STIB_dataset_generator.py'], check=True)
+            generate_dataset()
         st.success('✅ Dataset generated!')
 
         with st.spinner('🤖 Running prediction model...'):
-            subprocess.run(['python3', 'fusion_use.py'], check=True)
+            run_model()
         st.success('✅ Prediction finished!')
 
         with st.spinner('📦 Loading prediction results...'):
@@ -49,7 +51,7 @@ with col2:
                 st.success("🎉 Results loaded and mapped!")
             else:
                 st.error("results.csv not found. Please check your scripts.")
-
+                
 results_dict = st.session_state["results_dict"]
 
 # --- Draw edges and tooltips ---
