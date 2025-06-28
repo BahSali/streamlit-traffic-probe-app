@@ -1,0 +1,109 @@
+ID-start;Name - start;Name-stop;bus lines;stop-seq;ID_graph_edge
+1870;La Chasse;Louis Hap;36;25;1
+1871;Louis Hap;Leman;36;26;2
+3912;Leman;Jourdan;80;22;3
+1278;La chasse;Fetis;34;12;4
+1764;Fetis;Etanges Vijvers;34;13;5
+1804;Louis Hap;La Chasse;36;5;6
+1803;Leman;Louis Hap;36;4;7
+3160;Etangs;Leman;80;6;8
+1733;Etangs;Fetis;34;6;9
+1712;Fetis;La Chasse;34;7;10
+1713;La Chasse;Buedts;34;8;11
+1714;Buedts;Arsenal;34;9;12
+1715;Arsenal;Buedts;34;10;13
+1762;Buedts;La Chasse;34;11;14
+4363;Etterbeek gare;Delporte;95;10;15
+4364;Delporter;Rodin;95;11;16
+4365;Rodin;Gemoir;95;12;17
+4366;Germoir;Blyckaerts;95;13;18
+1909;Blyckaerts;Germoir;95;11;19
+4303;Germoir;Rodin;95;12;20
+4304;Rodin;Delporte;95;13;21
+4305;Delporte;Etterbeek Gare;95;14;22
+1884;Blyckaerts;Varia;60;25;23
+1883;Varia;Etangs;60;26;24
+;Etange;Varia;60;;25
+1880;Varia;Blyckaerts;60;6;26
+1980;Malibran;Blayckaerts;38;14;27
+1980;Malibran;Blayckaerts;60;24;27
+1909;Blyckaerts;Malibran;38;9;28
+1881;Blyckaerts;Malibran;60;8;28
+1910;Malibran;Flagey;38;9;29
+1910;Malibran;Flagey;60;8;29
+6112;Flagey;Malibran;38;13;30
+6112;Flagey;Malibran;60;23;30
+1280;Flagey;Wery;59;2;31
+3155;Wery;Natation;59;3;32
+3156;Natation;Jourdan;59;4;33
+3921;Jourdan;Natation;59;23;34
+3120;Natation;Wery;59;24;35
+3121;Wery;Flagey;59;25;36
+3572;Flagey;Musee D'Ixelles;71;10;37
+5612;Musee D'Ixelles;Fernand Cocq;71;11;38
+2963;Fernand Cocq;Quart St. Boniface;71;12;39
+2964;Quart St. Boniface;Porte De Namur;71;13;40
+3518;Porte De Namur;Quart St. Boniface;71;6;41
+3506;Quart St. Boniface;Fernand Cocq;71;7;42
+2928;Fernand Cocq;Musee D'Ixelles;71;8;43
+5611;Musee D'Ixelles;Flagey;71;9;44
+1981;Blyckaerts;Idalie;38;15;45
+1981;Blyckaerts;Idalie;95;14;45
+1983;Idalie;Blyckaerts;95;10;46
+1906;Idalie;Blyckaerts;38;7;46
+1706;Idalie;Museum;34;4;47
+1706;Idalie;Museum;80;4;47
+1728;Museum;Etangs;34;5;48
+1728;Museum;Etangs;80;5;48
+1777;Etangs;Museum;34;14;49
+;Etangs;Museum;80;;49
+1769;Museum;Idalie;34;15;50
+1769;Museum;Idalie;80;25;50
+1983;Idalie;Luxembourg;34;16;51
+1983;Idalie;Luxembourg;38;16;51
+1983;Idalie;Luxembourg;80;25;51
+1233;Luxembourg;Idalie;34;3;52
+1233;Luxembourg;Idalie;38;6;52
+1233;Luxembourg;Idalie;80;3;52
+4367;Luxembourg;Science;34;17;53
+4367;Luxembourg;Science;38;17;53
+4367;Luxembourg;Science;80;26;53
+1162;Luxembourg;Science;64;19;53
+1729;Science;Luxembourg;34;2;54
+1729;Science;Luxembourg;38;5;54
+1729;Science;Luxembourg;64;2;54
+1729;Science;Luxembourg;80;2;54
+1776;Science;Troon;34;18;55
+1776;Science;Troon;38;18;55
+1776;Science;Troon;64;20;55
+1776;Science;Troon;80;27;55
+6433;Troon;Science;34;1;56
+6433;Troon;Science;38;4;56
+6433;Troon;Science;64;1;56
+6433;Troon;Science;80;1;56
+6432;Troon;Porte de Namur;34;19;57
+1734;Troon;Porte de Namur;54;1;57
+6432;Troon;Porte de Namur;64;21;57
+1734;Troon;Porte de Namur;71;5;57
+6432;Troon;Porte de Namur;80;28;57
+1824;Porte de Namur;Troon;34;0;58
+2967;Porte de Namur;Troon;54;18;58
+1654;Porte de Namur;Troon;64;0;58
+2967;Porte de Namur;Troon;71;14;58
+1824;Porte de Namur;Troon;80;0;58
+4362;Thys;Etterbeek Gare;95;9;59
+4306;Etterbeek Gare;Thys;95;15;60
+4307;Thys;Cimetiere d'Ixelles;95;16;61
+3514;Cimetiere d'Ixelles;Thys;95;8;62
+3558;Cimetiere d'Ixelles;ULB;71;4;63
+3559;ULB;Cimetiere d'Ixelles;71;5;64
+5407;ULB;Jean-Johanna;71;14;65
+;Jeanne Johanna;ULB;71;;66
+3525;Jeanne Johanna;Buyl;71;6;67
+;Buyl;Jeanne Johanna;71;;68
+2351;Buyl;Geo Bernier;71;7;69
+3510;Geo Bernier;Buyl;71;12;70
+3562;Geo Bernier;Etangs D'IXELLES;71;8;71
+3517;Etangs D'IXELLES;Geo Bernier;71;11;72
+3570;Etangs D'IXELLES;Flagey;71;9;73
+3372;Flagey;Etangs D'IXELLES;71;10;74
