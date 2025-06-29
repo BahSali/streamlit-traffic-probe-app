@@ -10,7 +10,7 @@ import os
 df = pd.read_csv("Brux_net.csv", sep=';')
 df['id'] = df['id'].astype(str)
 
-st.title("Graph Visualization on OpenStreetMap")
+st.title("Real-time Average Speed Estimator")
 
 with st.expander("Show raw data"):
     st.dataframe(df)
