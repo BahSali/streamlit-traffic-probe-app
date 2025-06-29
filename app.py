@@ -32,7 +32,30 @@ if "results_dict" not in st.session_state:
 # --- Button & Processing ---
 col1, col2, col3 = st.columns([2, 3, 2])
 with col2:
-    if st.button("🚦 Update Data & Predict (Click Me!)"):
+    st.markdown("""
+    <style>
+    .custom-button {
+        background-color: #007bff;
+        color: white;
+        padding: 0.75em 2em;
+        font-size: 1.1em;
+        border-radius: 2em;
+        border: none;
+        cursor: pointer;
+        font-weight: bold;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        transition: background 0.3s;
+    }
+    .custom-button:hover {
+        background-color: #0056b3;
+    }
+    </style>
+    <form action="" method="post">
+        <button class="custom-button" type="submit">🚦 Retrieve Live Bus Speeds & Predict Traffic</button>
+    </form>
+""", unsafe_allow_html=True)
+
+    if st.button("Run Traffic Estimation (Click Me!)"):
         with st.spinner('⏳ Generating latest dataset (please wait)...'):
             generate_dataset()
         st.success('✅ Dataset generated!')
