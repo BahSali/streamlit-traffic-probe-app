@@ -12,7 +12,7 @@ df['id'] = df['id'].astype(str)
 
 st.title("Real-time Average Speed Estimator")
 
-with st.expander("Show raw data"):
+with st.expander("Show raw segments"):
     st.dataframe(df)
 
 last_four_cols = df.columns[-4:]
@@ -34,11 +34,11 @@ col1, col2, col3 = st.columns([2, 3, 2])
 with col2:
 
     if st.button("Run Traffic Estimation (Click Me!)"):
-        with st.spinner('⏳ Generating latest dataset (please wait)...'):
+        with st.spinner('⏳ Fetching Live Bus Speed (please wait)...'):
             generate_dataset()
         st.success('✅ Retrieve Live Bus Speeds!')
 
-        with st.spinner('🤖 Running prediction model...'):
+        with st.spinner('🤖 Running Estimator tool...'):
             run_model()
         st.success('✅ Estimation finished!')
 
