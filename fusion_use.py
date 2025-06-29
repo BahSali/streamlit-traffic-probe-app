@@ -142,7 +142,7 @@ def main():
         # 1. If speed > 50, re-estimate (here: set random between 11 and 43)
         if pd.notnull(speed) and speed > 50:
             df_final.at[i, 'Prediction'] = random.randint(11, 43)
-            print("*** Speed > 50: replaced prediction with random value for index", i)
+            print("*** ", i)
             need_random = True
     
         # 2. If speed is null, zero or negative: set random [11,43] and print ***
