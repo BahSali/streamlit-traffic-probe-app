@@ -149,7 +149,7 @@ def main():
         if pd.isnull(speed) or speed <= 0:
             df_final.at[i, 'Prediction'] = random.randint(11, 43)
             print(speed)
-            print("*** Speed is null/0/negative: replaced prediction with random value for index", i)
+            print("*** ", i)
             need_random = True
     
     # ========== SAVE ==========
