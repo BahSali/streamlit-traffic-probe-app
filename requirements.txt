@@ -4,5 +4,4 @@ streamlit-folium
 pandas
 duckdb
 scikit-learn
-torch==2.3.0
-
+torch
