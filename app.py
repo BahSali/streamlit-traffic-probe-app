@@ -4,15 +4,40 @@ import streamlit as st
 import pandas as pd
 import folium
 from streamlit_folium import st_folium
-import subprocess
 import os
 
+# ---------- Theme Style for Button ----------
+btn_style = """
+<style>
+div.stButton > button:first-child {
+    background-color: #009688;
+    color: white;
+    font-weight: bold;
+    border-radius: 8px;
+    padding: 0.7em 1.5em;
+    margin: 0.5em 0em;
+    transition: background 0.2s;
+}
+div.stButton > button:first-child:hover {
+    background-color: #00665c;
+    color: #fff;
+}
+</style>
+"""
+st.markdown(btn_style, unsafe_allow_html=True)
+
+# ---------- Page Title and Caption ----------
+st.markdown(
+    "<h1 style='text-align:center; color:#009688;'>🚌 Bus Route Speed & Prediction Visualizer</h1>",
+    unsafe_allow_html=True
+)
+st.caption("Visualizing real-time speeds and predictions for the bus network.")
+
+# ---------- Data Loading ----------
 df = pd.read_csv("Brux_net.csv", sep=';')
 df['id'] = df['id'].astype(str)
 
-st.title("Real-time Average Speed Estimator")
-
-with st.expander("Show raw segments"):
+with st.expander("📄 Show raw segment data"):
     st.dataframe(df)
 
 last_four_cols = df.columns[-4:]
@@ -25,14 +50,13 @@ map_center = [
 
 m = folium.Map(location=map_center, zoom_start=13)
 
-# --- Session State ---
+# ---------- Session State for Results ----------
 if "results_dict" not in st.session_state:
     st.session_state["results_dict"] = {}
 
-# --- Button & Processing ---
+# ---------- Button & Processing ----------
 col1, col2, col3 = st.columns([2, 3, 2])
 with col2:
-
     if st.button("Run Traffic Estimation (Click Me!)"):
         with st.spinner('⏳ Fetching Live Bus Speed (please wait)...'):
             generate_dataset()
@@ -52,10 +76,10 @@ with col2:
                 st.success("🎉 Results loaded and mapped!")
             else:
                 st.error("results.csv not found. Please check your scripts.")
-                
+
 results_dict = st.session_state["results_dict"]
 
-# --- Draw edges and tooltips ---
+# ---------- Color Helper Function ----------
 def get_speed_color(pred):
     try:
         pred = float(pred)
@@ -74,6 +98,7 @@ def get_speed_color(pred):
     else:
         return "#00B050"   # green
 
+# ---------- Draw Edges and Tooltips ----------
 for idx, row in df.iterrows():
     street_name = f"{row[df.columns[1]]} - {row[df.columns[2]]}"
     segment_id = str(row['id'])
@@ -97,18 +122,24 @@ for idx, row in df.iterrows():
         tooltip=tooltip_text
     ).add_to(m)
 
-
-# st.subheader("Brussels Case Study")
-# st_folium(m, width=700, height=500)
+# ---------- Show Map and Color Legend ----------
 col1, col2 = st.columns([4, 1])
 with col1:
     st_folium(m, width=700, height=500)
 with col2:
     st.markdown("""
-    <span style="display:inline-block;width:20px;height:20px;background:#8B0000"></span> 0-10<br>
-    <span style="display:inline-block;width:20px;height:20px;background:#FF0000"></span> 10-20<br>
-    <span style="display:inline-block;width:20px;height:20px;background:#FFA500"></span> 20-30<br>
-    <span style="display:inline-block;width:20px;height:20px;background:#FFFF00"></span> 30-40<br>
-    <span style="display:inline-block;width:20px;height:20px;background:#9ACD32"></span> 40-50<br>
-    <span style="display:inline-block;width:20px;height:20px;background:#00B050"></span> 50-60<br>
+    <div style='font-weight:bold;margin-bottom:8px;'>Prediction Color Key</div>
+    <div style='line-height:2;'>
+        <span style="display:inline-block;width:22px;height:18px;background:#8B0000;border-radius:4px;margin-right:8px;"></span> 0–10
+        <br>
+        <span style="display:inline-block;width:22px;height:18px;background:#FF0000;border-radius:4px;margin-right:8px;"></span> 10–20
+        <br>
+        <span style="display:inline-block;width:22px;height:18px;background:#FFA500;border-radius:4px;margin-right:8px;"></span> 20–30
+        <br>
+        <span style="display:inline-block;width:22px;height:18px;background:#FFFF00;border-radius:4px;margin-right:8px;"></span> 30–40
+        <br>
+        <span style="display:inline-block;width:22px;height:18px;background:#9ACD32;border-radius:4px;margin-right:8px;"></span> 40–50
+        <br>
+        <span style="display:inline-block;width:22px;height:18px;background:#00B050;border-radius:4px;margin-right:8px;"></span> 50+
+    </div>
     """, unsafe_allow_html=True)
