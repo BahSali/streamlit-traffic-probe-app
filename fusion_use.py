@@ -31,8 +31,8 @@ class CNNTimeSeries(nn.Module):
         
 def main():
     # Load model
-    model = torch.load('full_model_new_loss.pth')
-    # model = torch.load('full_model_new_loss.pth', weights_only=False)
+    # model = torch.load('full_model_new_loss.pth')
+    model = torch.load('full_model_new_loss.pth', weights_only=False)
 
     
     model.eval()
