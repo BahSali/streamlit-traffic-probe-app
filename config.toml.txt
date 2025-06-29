@@ -1,10 +1,9 @@
-[ui]
-hideTopBar = true
-
-
 [theme]
-primaryColor = "#ff9977"  # می‌تونی سلیقه‌ای عوض کنی
-backgroundColor = "#fff7f3"  # رنگ لایت لایت لایت سالمونی
-secondaryBackgroundColor = "#fde7df"  # سالمونی خیلی روشن برای پنل‌ها
+primaryColor = "#ff9977"
+backgroundColor = "#fff7f3"
+secondaryBackgroundColor = "#fde7df"
 textColor = "#262730"
 font = "sans serif"
+
+[ui]
+hideTopBar = true
