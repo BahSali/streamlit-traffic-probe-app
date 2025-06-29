@@ -33,7 +33,7 @@ def main():
     # Load model
     # model = torch.load('full_model_new_loss.pth')
     # model = torch.load('full_model_new_loss.pth', weights_only=False)
-    model = CNNTimeSeries(*args, **kwargs) 
+    model = CNNTimeSeries(num_features=5, lookback=10)
     model.load_state_dict(torch.load('full_model_new_loss_v2.pth', map_location='cpu'))
     model.eval()
 
