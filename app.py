@@ -5,7 +5,7 @@ import pandas as pd
 import folium
 from streamlit_folium import st_folium
 import os
-import streamlit.components.v1 as components
+#import streamlit.components.v1 as components
 
 # ---------- Theme Style for Button ----------
 btn_style = """
