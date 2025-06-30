@@ -159,8 +159,8 @@ google_maps_url = (
     f"&center={google_map_center}"
     f"&zoom={google_map_zoom}"
     f"&maptype=roadmap"
-    f"&layer=traffic"  # Shows the live traffic overlay
 )
+
 
 st.markdown("---")  # Optional separator
 st.markdown("<h4 style='text-align:center;color:#009688;'>Google Maps (Live Traffic)</h4>", unsafe_allow_html=True)
