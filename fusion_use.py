@@ -138,16 +138,16 @@ def main():
         speed = row['Speed']
         pred = row['Prediction']
     
-        # If speed exists and needs randomization, set random prediction in [max(speed-6, 5), min(speed+6, 35)]
+        # If speed exists and needs randomization, set random prediction in [max(speed-6, 9), min(speed+6, 33)]
         if pd.notnull(speed) and speed > 0.5:
-            lower = max(speed - 6, 5)
-            upper = min(speed + 6, 35)
+            lower = max(speed - 6, 9)
+            upper = min(speed + 6, 33)
             if lower > upper:
-                lower, upper = 5, 35  # fallback for edge cases
+                lower, upper = 5, 33  # fallback for edge cases
             df_final.at[i, 'Prediction'] = random.randint(int(lower), int(upper))
-        # If speed is missing, zero or negative: set random in [5, 35]
+        # If speed is missing, zero or negative: set random in [9, 33]
         else:
-            df_final.at[i, 'Prediction'] = random.randint(5, 35)
+            df_final.at[i, 'Prediction'] = random.randint(9, 33)
     
     ### === NEW BLOCK: add random prediction for missing streets ===
     # Load all street IDs from segments file
@@ -166,7 +166,7 @@ def main():
     for seg_id in missing_ids:
         new_row = {
             'SegmentID': seg_id,
-            'Prediction': random.randint(7, 30),  # مقدار دلخواه شما
+            'Prediction': random.randint(11, 30),  # مقدار دلخواه شما
             'Speed': None,
             'Time': latest_time,
             'StreetName': None
