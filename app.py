@@ -103,7 +103,7 @@ def get_speed_color(pred):
 for idx, row in df.iterrows():
     street_name = f"{row[df.columns[1]]} - {row[df.columns[2]]}"
     segment_id = str(row['id'])
-    tooltip_text = f"ID: {segment_id}<br>Street: {street_name}"
+    tooltip_text = f"Segment ID: {segment_id}<br>Segment Name: {street_name}"
 
     color = "black"
     if results_dict and segment_id in results_dict:
