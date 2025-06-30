@@ -135,22 +135,19 @@ def main():
     
     # ========== CONSTRAINTS ON df_final ==========
     for i, row in df_final.iterrows():
-        speed = row['Speed']
-        pred = row['Prediction']
-        need_random = False
-    
-        # 1. If speed > 50, re-estimate (here: set random between 11 and 33)
-        if pd.notnull(speed) and speed > 50:
-            df_final.at[i, 'Prediction'] = random.randint(11, 33)
-            print("*** ", i)
-            need_random = True
-    
-        # 2. If speed is null, zero or negative: set random [11,33] and print ***
-        if pd.isnull(speed) or speed <= 0.5:
-            df_final.at[i, 'Prediction'] = random.randint(11, 17)
-            print(speed)
-            print("*** ", i)
-            need_random = True
+    speed = row['Speed']
+    pred = row['Prediction']
+
+    # If speed exists and needs randomization, set random prediction in [max(speed-6, 5), min(speed+6, 35)]
+    if pd.notnull(speed) and speed > 0.5:
+        lower = max(speed - 6, 5)
+        upper = min(speed + 6, 35)
+        if lower > upper:
+            lower, upper = 5, 35  # fallback for edge cases
+        df_final.at[i, 'Prediction'] = random.randint(int(lower), int(upper))
+    # If speed is missing, zero or negative: set random in [5, 35]
+    else:
+        df_final.at[i, 'Prediction'] = random.randint(5, 35)
     
     ### === NEW BLOCK: add random prediction for missing streets ===
     # Load all street IDs from segments file
