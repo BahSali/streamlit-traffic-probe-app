@@ -146,7 +146,7 @@ def main():
             need_random = True
     
         # 2. If speed is null, zero or negative: set random [11,33] and print ***
-        if pd.isnull(speed) or speed <= 0:
+        if pd.isnull(speed) or speed <= 0.5:
             df_final.at[i, 'Prediction'] = random.randint(11, 33)
             print(speed)
             print("*** ", i)
