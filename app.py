@@ -111,7 +111,7 @@ for idx, row in df.iterrows():
         speed = result_row.get('Speed', 'N/A')
         prediction = result_row.get('Prediction', 'N/A')
         # tooltip_text += f"<br>STIB: {speed}<br>Estimation: {prediction}"
-        tooltip_text += f"<br>Speed: {float(speed):.1f}<br>Prediction: {float(prediction):.1f}"
+        tooltip_text += f"<br>STIB Speed: {float(speed):.1f}<br>Estimation: {float(prediction):.1f}"
         color = get_speed_color(prediction)
 
     folium.PolyLine(
