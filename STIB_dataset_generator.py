@@ -52,6 +52,8 @@ def main():
     for url in response["results"]:
         data = BytesIO(requests.get(url).content)
         table = pq.read_table(data)
+        print('**')
+        print(f"File {i}: {url}\nSchema: {table.schema}\nColumns: {table.column_names}\nRows: {table.num_rows}")
         # Skip empty tables
         if table.num_columns == 0 or table.num_rows == 0:
             print(f"Skipped empty table from: {url}")
