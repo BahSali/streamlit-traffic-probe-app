@@ -139,19 +139,47 @@ def main():
         pred = row['Prediction']
         need_random = False
     
-        # 1. If speed > 50, re-estimate (here: set random between 11 and 43)
+        # 1. If speed > 50, re-estimate (here: set random between 11 and 33)
         if pd.notnull(speed) and speed > 50:
-            df_final.at[i, 'Prediction'] = random.randint(11, 43)
+            df_final.at[i, 'Prediction'] = random.randint(11, 33)
             print("*** ", i)
             need_random = True
     
-        # 2. If speed is null, zero or negative: set random [11,43] and print ***
+        # 2. If speed is null, zero or negative: set random [11,33] and print ***
         if pd.isnull(speed) or speed <= 0:
-            df_final.at[i, 'Prediction'] = random.randint(11, 43)
+            df_final.at[i, 'Prediction'] = random.randint(11, 33)
             print(speed)
             print("*** ", i)
             need_random = True
     
+    ### === NEW BLOCK: add random prediction for missing streets ===
+    # Load all street IDs from segments file
+    seg_file = 'Etterbeek_STIB_segments.csv'
+    df_seg = pd.read_csv(seg_file, sep=';', encoding='latin1')
+    df_seg.columns = df_seg.columns.str.strip()
+    segment_ids = set(df_seg['ID_graph_edge'].astype(str))
+
+    # SegmentIDs already in df_final (as string)
+    present_ids = set(df_final['SegmentID'].astype(str))
+
+    # Find missing segment IDs
+    missing_ids = segment_ids - present_ids
+
+    # For هر segment که نیست، یه ردیف با Prediction رندوم اضافه کن
+    for seg_id in missing_ids:
+        new_row = {
+            'SegmentID': seg_id,
+            'Prediction': random.randint(7, 30),  # مقدار دلخواه شما
+            'Speed': None,
+            'Time': latest_time,
+            'StreetName': None
+        }
+        # اگر ستون بیشتری داری، مقدار None یا NA بده
+        for col in df_final.columns:
+            if col not in new_row:
+                new_row[col] = None
+        df_final = pd.concat([df_final, pd.DataFrame([new_row])], ignore_index=True)
+
     # ========== SAVE ==========
     output_file = 'results.csv'
     df_final.to_csv(output_file, sep=';', encoding='latin1', index=False)
