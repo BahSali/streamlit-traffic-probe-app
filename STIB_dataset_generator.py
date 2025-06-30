@@ -42,6 +42,10 @@ def main():
         if arrow_table is None:
             arrow_table = pq.read_table(data)
         else:
+            print('**********')
+            print("Schema of arrow_table:", arrow_table.schema)
+            print("Schema of pq.read_table(data):", pq.read_table(data).schema)
+
             arrow_table = pa.concat_tables([arrow_table, pq.read_table(data)])
     
     df = arrow_table.to_pandas()
