@@ -32,7 +32,7 @@ st.markdown(
     "<h1 style='text-align:center; color:#009688;'> Real-time Average Speed Estimator</h1>",
     unsafe_allow_html=True
 )
-st.caption("Visualizing real-time speeds and predictions for the bus network.")
+st.caption("Interactive visualisation of real-time probe-derived bus speeds alongside estimation of overall traffic conditions across road segments.")
 
 # ---------- Data Loading ----------
 df = pd.read_csv("Brux_net.csv", sep=';')
@@ -67,7 +67,7 @@ with col2:
             run_model()
         st.success('✅ Estimation finished!')
 
-        with st.spinner('📦 Loading prediction results...'):
+        with st.spinner('📦 Loading estimation results...'):
             if os.path.exists('results.csv'):
                 results = pd.read_csv('results.csv', sep=';')
                 results['SegmentID'] = results['SegmentID'].astype(str)
@@ -111,7 +111,7 @@ for idx, row in df.iterrows():
         speed = result_row.get('Speed', 'N/A')
         prediction = result_row.get('Prediction', 'N/A')
         # tooltip_text += f"<br>Speed: {speed}<br>Prediction: {prediction}"
-        tooltip_text += f"<br>Speed: {float(speed):.2f}<br>Prediction: {float(prediction):.2f}"
+        tooltip_text += f"<br>Speed: {float(speed):.1f}<br>Prediction: {float(prediction):.1f}"
         color = get_speed_color(prediction)
 
     folium.PolyLine(
