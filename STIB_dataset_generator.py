@@ -36,17 +36,40 @@ def main():
         f"https://api.mobilitytwin.brussels/parquetized?start_timestamp={min_date_utc}&end_timestamp={max_date_utc}&component=stib_vehicle_distance_parquetize"
     ).json()
     
-    arrow_table = None
+    
+    # ------------------------------------------------------------------
+    # arrow_table = None
+    # for url in response["results"]:
+    #     data = BytesIO(requests.get(url).content)
+    #     if arrow_table is None:
+    #         arrow_table = pq.read_table(data)
+    #     else:
+    #         arrow_table = pa.concat_tables([arrow_table, pq.read_table(data)])
+
+    arrow_tables = []
+    schema = None
+    
     for url in response["results"]:
         data = BytesIO(requests.get(url).content)
-        if arrow_table is None:
-            arrow_table = pq.read_table(data)
+        table = pq.read_table(data)
+        # Skip empty tables
+        if table.num_columns == 0 or table.num_rows == 0:
+            print(f"Skipped empty table from: {url}")
+            continue
+        if schema is None:
+            schema = table.schema
         else:
-            print('**********')
-            print("Schema of arrow_table:", arrow_table.schema)
-            print("Schema of pq.read_table(data):", pq.read_table(data).schema)
-
-            arrow_table = pa.concat_tables([arrow_table, pq.read_table(data)])
+            # If schema is different, cast to the first table's schema
+            if table.schema != schema:
+                table = table.cast(schema)
+        arrow_tables.append(table)
+    
+    # Check if you have any tables at all!
+    if not arrow_tables:
+        raise ValueError("No non-empty parquet tables were loaded!")
+    
+    arrow_table = pa.concat_tables(arrow_tables)
+    # ------------------------------------------------------------------
     
     df = arrow_table.to_pandas()
     df.to_parquet("combined_data.parquet")
