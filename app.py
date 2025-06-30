@@ -146,23 +146,22 @@ with col2:
     </div>
     """, unsafe_allow_html=True)
 
-# --- Google Maps Embed ---
-GOOGLE_MAPS_API_KEY = st.secrets["GOOGLE_MAPS_API_KEY"]
-
-# Center of the map: use the same as your folium map
-google_map_center = f"{map_center[0]},{map_center[1]}"
-google_map_zoom = 13
-
-google_maps_url = (
-    f"https://www.google.com/maps/embed/v1/view"
-    f"?key={GOOGLE_MAPS_API_KEY}"
-    f"&center={google_map_center}"
-    f"&zoom={google_map_zoom}"
-    f"&maptype=roadmap"
-)
-
-
-st.markdown("---")  # Optional separator
-st.markdown("<h4 style='text-align:center;color:#009688;'>Google Maps (Live Traffic)</h4>", unsafe_allow_html=True)
-components.iframe(google_maps_url, width=700, height=500)
+# # --- Google Maps Embed ---
+# GOOGLE_MAPS_API_KEY = st.secrets["GOOGLE_MAPS_API_KEY"]
+# 
+# # Center of the map: use the same as your folium map
+# google_map_center = f"{map_center[0]},{map_center[1]}"
+# google_map_zoom = 13
+# 
+# google_maps_url = (
+#     f"https://www.google.com/maps/embed/v1/view"
+#     f"?key={GOOGLE_MAPS_API_KEY}"
+#     f"&center={google_map_center}"
+#     f"&zoom={google_map_zoom}"
+#     f"&maptype=roadmap"
+# )
+# 
+# st.markdown("---")  # Optional separator
+# st.markdown("<h4 style='text-align:center;color:#009688;'>Google Maps (Live Traffic)</h4>", unsafe_allow_html=True)
+# components.iframe(google_maps_url, width=700, height=500)
 
