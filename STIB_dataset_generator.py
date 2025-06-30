@@ -49,28 +49,31 @@ def main():
     arrow_tables = []
     schema = None
     
-    for url in response["results"]:
+    for idx, url in enumerate(response["results"]):
         data = BytesIO(requests.get(url).content)
         table = pq.read_table(data)
-        print('**')
-        print(f"File {i}: {url}\nSchema: {table.schema}\nColumns: {table.column_names}\nRows: {table.num_rows}")
         # Skip empty tables
         if table.num_columns == 0 or table.num_rows == 0:
             print(f"Skipped empty table from: {url}")
             continue
         if schema is None:
             schema = table.schema
+            arrow_tables.append(table)
+            print(f"Added first table (idx={idx}): {url}")
         else:
-            # If schema is different, cast to the first table's schema
-            if table.schema != schema:
-                table = table.cast(schema)
-        arrow_tables.append(table)
+            if table.schema == schema:
+                arrow_tables.append(table)
+                print(f"Appended matching schema table (idx={idx}): {url}")
+            else:
+                print(f"Skipped mismatched schema table (idx={idx}) from: {url}")
+                print(f"Expected schema: {schema}")
+                print(f"Got schema: {table.schema}")
     
-    # Check if you have any tables at all!
     if not arrow_tables:
-        raise ValueError("No non-empty parquet tables were loaded!")
+        raise ValueError("No valid parquet tables with matching schema were loaded!")
     
     arrow_table = pa.concat_tables(arrow_tables)
+
     # ------------------------------------------------------------------
     
     df = arrow_table.to_pandas()
