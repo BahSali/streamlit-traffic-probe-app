@@ -110,7 +110,7 @@ for idx, row in df.iterrows():
         result_row = results_dict[segment_id]
         speed = result_row.get('Speed', 'N/A')
         prediction = result_row.get('Prediction', 'N/A')
-        # tooltip_text += f"<br>STIB_Speed: {speed}<br>Estimation: {prediction}"
+        # tooltip_text += f"<br>STIB: {speed}<br>Estimation: {prediction}"
         tooltip_text += f"<br>Speed: {float(speed):.1f}<br>Prediction: {float(prediction):.1f}"
         color = get_speed_color(prediction)
 
