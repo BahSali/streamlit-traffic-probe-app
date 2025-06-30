@@ -5,7 +5,6 @@ import pandas as pd
 import folium
 from streamlit_folium import st_folium
 import os
-import streamlit.components.v1 as components
 
 # ---------- Theme Style for Button ----------
 btn_style = """
@@ -147,21 +146,3 @@ with col2:
     """, unsafe_allow_html=True)
 
 
-# ---------- Google Maps Embed Code (centered on the same point as your folium map) ----------
-google_map_center = f"{map_center[0]},{map_center[1]}"
-google_map_zoom = 13  # Make this match folium's zoom_start
-
-# Generate the Google Maps embed URL
-google_maps_url = (
-    f"https://www.google.com/maps/embed/v1/view"
-    f"?key=YOUR_GOOGLE_MAPS_EMBED_API_KEY"  # <--- Replace with your real API key!
-    f"&center={google_map_center}"
-    f"&zoom={google_map_zoom}"
-    f"&maptype=roadmap"
-)
-
-# Display Google Maps next to your folium map
-st.markdown("---")  # Optional: horizontal rule for separation
-
-st.markdown("<h4 style='text-align:center;color:#009688;'>Google Maps View (same area)</h4>", unsafe_allow_html=True)
-components.iframe(google_maps_url, width=700, height=500)
