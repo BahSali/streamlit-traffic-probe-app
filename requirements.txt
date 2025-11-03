@@ -5,3 +5,5 @@ pandas
 duckdb
 scikit-learn
 torch
+geopandas
+shapely
