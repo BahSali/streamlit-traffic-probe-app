@@ -205,16 +205,17 @@ if selected_page == "Brussels":
 
     # --- Map setup like Ixelles-Etterbeek ---
     map_center = [gdf.geometry.centroid.y.mean(), gdf.geometry.centroid.x.mean()]
-    m = folium.Map(location=map_center, zoom_start=12)
+    m = folium.Map(location=map_center, zoom_start=14)
 
     # --- Styling by category (optional visual variety) ---
     for _, row in gdf.iterrows():
         color = "black"
-        tooltip = "<br>".join([f"<b>{col}:</b> {row[col]}" for col in list(gdf.columns)[:3]])
+        # tooltip = "<br>".join([f"<b>{col}:</b> {row[col]}" for col in list(gdf.columns)[:3]])
+        tooltip = f"<b>Line:</b> {row.get('ligne', 'N/A')}<br><b>Variant:</b> {row.get('variante', 'N/A')}"
         folium.GeoJson(
             row.geometry.__geo_interface__,
             tooltip=tooltip,
-            style_function=lambda x, color=color: {"color": color, "weight": 3}
+            style_function=lambda x, color=color: {"color": color, "weight": 2.5}
         ).add_to(m)
 
     # --- Map and legend side-by-side like Ixelles-Etterbeek ---
