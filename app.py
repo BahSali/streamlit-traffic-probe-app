@@ -208,35 +208,14 @@ if selected_page == "Brussels":
     m = folium.Map(location=map_center, zoom_start=12)
 
     # --- Styling by category (optional visual variety) ---
-    def get_speed_color(pred):
-        try:
-            pred = float(pred)
-        except:
-            return "gray"
-        if pred < 10:
-            return "#8B0000"   # dark red
-        elif pred < 20:
-            return "#FF0000"   # red
-        elif pred < 30:
-            return "#FFA500"   # orange
-        elif pred < 40:
-            return "#FFFF00"   # yellow
-        elif pred < 50:
-            return "#9ACD32"   # light green
-        else:
-            return "#00B050"   # green
-    
-    # --- Draw segments with colors ---
     for _, row in gdf.iterrows():
-        speed = row.get("speed", 10 + 40 * np.random.rand())
-        color = get_speed_color(speed)
+        color = "#009688"
         tooltip = "<br>".join([f"<b>{col}:</b> {row[col]}" for col in list(gdf.columns)[:3]])
         folium.GeoJson(
             row.geometry.__geo_interface__,
             tooltip=tooltip,
-            style_function=lambda x, color=color: {"color": color, "weight": 4}
+            style_function=lambda x, color=color: {"color": color, "weight": 3}
         ).add_to(m)
-
 
     # --- Map and legend side-by-side like Ixelles-Etterbeek ---
     col1, col2 = st.columns([4, 1])
