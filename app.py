@@ -243,20 +243,20 @@ if selected_page == "Brussels":
     with col1:
         st_folium(m, width=700, height=500)
     with col2:
-    st.markdown("""
-    <div style='font-weight:bold;margin-bottom:8px;'>Speed Color Key</div>
-    <div style='line-height:2;'>
-        <span style="display:inline-block;width:22px;height:18px;background:#8B0000;border-radius:4px;margin-right:8px;"></span> 0–10
-        <br>
-        <span style="display:inline-block;width:22px;height:18px;background:#FF0000;border-radius:4px;margin-right:8px;"></span> 10–20
-        <br>
-        <span style="display:inline-block;width:22px;height:18px;background:#FFA500;border-radius:4px;margin-right:8px;"></span> 20–30
-        <br>
-        <span style="display:inline-block;width:22px;height:18px;background:#FFFF00;border-radius:4px;margin-right:8px;"></span> 30–40
-        <br>
-        <span style="display:inline-block;width:22px;height:18px;background:#9ACD32;border-radius:4px;margin-right:8px;"></span> 40–50
-        <br>
-        <span style="display:inline-block;width:22px;height:18px;background:#00B050;border-radius:4px;margin-right:8px;"></span> 50+
-    </div>
-    """, unsafe_allow_html=True)
+        st.markdown("""
+        <div style='font-weight:bold;margin-bottom:8px;'>Speed Color Key</div>
+        <div style='line-height:2;'>
+            <span style="display:inline-block;width:22px;height:18px;background:#8B0000;border-radius:4px;margin-right:8px;"></span> 0–10
+            <br>
+            <span style="display:inline-block;width:22px;height:18px;background:#FF0000;border-radius:4px;margin-right:8px;"></span> 10–20
+            <br>
+            <span style="display:inline-block;width:22px;height:18px;background:#FFA500;border-radius:4px;margin-right:8px;"></span> 20–30
+            <br>
+            <span style="display:inline-block;width:22px;height:18px;background:#FFFF00;border-radius:4px;margin-right:8px;"></span> 30–40
+            <br>
+            <span style="display:inline-block;width:22px;height:18px;background:#9ACD32;border-radius:4px;margin-right:8px;"></span> 40–50
+            <br>
+            <span style="display:inline-block;width:22px;height:18px;background:#00B050;border-radius:4px;margin-right:8px;"></span> 50+
+        </div>
+        """, unsafe_allow_html=True)
 
