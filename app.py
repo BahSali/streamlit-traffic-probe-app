@@ -34,22 +34,8 @@ st.markdown(
 )
 st.caption("Interactive visualisation of real-time probe-derived bus speeds alongside estimation of overall traffic conditions across road segments.")
 
-# ---------- Page Selector ----------
-page = st.selectbox(
-    "Select dataset or city:",
-    ["Ixelles-Etterbeek", "Brussels", "ِYork"]
-)
 # ---------- Data Loading ----------
-# df = pd.read_csv("Brux_net.csv", sep=';')
-if page == "Ixelles-Etterbeek":
-    df = pd.read_csv("Brux_net.csv", sep=';')
-elif page == "Brussels":
-    df = pd.read_csv("Antwerp_net.csv", sep=';')
-elif page == "York":
-    df = pd.read_csv("Liege_net.csv", sep=';')
-else:
-    st.error("Unknown selection.")
-    st.stop()
+df = pd.read_csv("Brux_net.csv", sep=';')
     
 df['id'] = df['id'].astype(str)
 
