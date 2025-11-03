@@ -6,6 +6,9 @@ import folium
 from streamlit_folium import st_folium
 import os
 #import streamlit.components.v1 as components
+import geopandas as gpd
+import requests
+from shapely.geometry import shape
 
 # ---------- Theme Style for Button ----------
 btn_style = """
@@ -174,4 +177,32 @@ if selected_page == "Ixelles-Etterbeek":
     # st.markdown("---")  # Optional separator
     # st.markdown("<h4 style='text-align:center;color:#009688;'>Google Maps (Live Traffic)</h4>", unsafe_allow_html=True)
     # components.iframe(google_maps_url, width=700, height=500)
-    
+
+
+# -------- Brussels -------
+if selected_page == "Brussels":
+   # --- Fetch Shapefile ---
+    token = "dd246f5afde3eceba4aa392777df19de4f1b2e71339a2450c24e70e83a54ad3dbe1cff1a226b4f1b4a5954cab691d4e5eb4b74ab699520770bfba723041e9dca"
+    url = "https://api.mobilitytwin.brussels/stib/shapefile"
+    headers = {'Authorization': f'Bearer {token}'}
+    response = requests.get(url, headers=headers)
+    response.raise_for_status()
+    shapefile_data = response.json()
+
+    # --- Convert to GeoDataFrame ---
+    geometries = [shape(f["geometry"]) for f in shapefile_data["features"]]
+    df = pd.DataFrame([f["properties"] for f in shapefile_data["features"]])
+    gdf = gpd.GeoDataFrame(df, geometry=geometries, crs="EPSG:4326")
+
+    # --- Plot on map ---
+    center = [gdf.geometry.centroid.y.mean(), gdf.geometry.centroid.x.mean()]
+    m = folium.Map(location=center, zoom_start=12)
+
+    folium.GeoJson(
+        gdf,
+        name="STIB Segments",
+        tooltip=folium.GeoJsonTooltip(fields=list(gdf.columns)[:3])
+    ).add_to(m)
+
+    # --- Show interactive map in Streamlit ---
+    st_folium(m, width=700, height=500)
