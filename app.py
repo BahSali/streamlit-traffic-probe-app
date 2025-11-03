@@ -184,7 +184,7 @@ if selected_page == "Brussels":
         "<h3 style='text-align:center; color:#009688;'>Brussels STIB Network Overview</h3>",
         unsafe_allow_html=True
     )
-    st.caption("Interactive visualization of STIB bus/tram network derived from the Brussels Mobility API.")
+    st.caption("Loading the transportation network...")
 
     # --- Cached data fetch to avoid repeating downloads ---
     @st.cache_data(show_spinner=False)
