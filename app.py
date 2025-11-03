@@ -180,7 +180,11 @@ if selected_page == "Ixelles-Etterbeek":
 
 # -------- Brussels --------
 if selected_page == "Brussels":
-    st.caption("Loading the transportation network...")
+
+    # ---------- Button & Processing ----------
+    col1, col2, col3 = st.columns([2, 3, 2])
+    with col2:
+        st.button("Run Traffic Estimation (Click Me!)")
 
     # --- Cached data fetch to avoid repeating downloads ---
     @st.cache_data(show_spinner=False)
@@ -204,24 +208,55 @@ if selected_page == "Brussels":
     m = folium.Map(location=map_center, zoom_start=12)
 
     # --- Styling by category (optional visual variety) ---
+    def get_speed_color(pred):
+        try:
+            pred = float(pred)
+        except:
+            return "gray"
+        if pred < 10:
+            return "#8B0000"   # dark red
+        elif pred < 20:
+            return "#FF0000"   # red
+        elif pred < 30:
+            return "#FFA500"   # orange
+        elif pred < 40:
+            return "#FFFF00"   # yellow
+        elif pred < 50:
+            return "#9ACD32"   # light green
+        else:
+            return "#00B050"   # green
+    
+    # --- Draw segments with colors ---
     for _, row in gdf.iterrows():
-        color = "#009688"
+        speed = row.get("speed", 10 + 40 * np.random.rand())
+        color = get_speed_color(speed)
         tooltip = "<br>".join([f"<b>{col}:</b> {row[col]}" for col in list(gdf.columns)[:3]])
         folium.GeoJson(
             row.geometry.__geo_interface__,
             tooltip=tooltip,
-            style_function=lambda x, color=color: {"color": color, "weight": 3}
+            style_function=lambda x, color=color: {"color": color, "weight": 4}
         ).add_to(m)
+
 
     # --- Map and legend side-by-side like Ixelles-Etterbeek ---
     col1, col2 = st.columns([4, 1])
     with col1:
         st_folium(m, width=700, height=500)
     with col2:
-        st.markdown("""
-        <div style='font-weight:bold;margin-bottom:8px;'>Segment Color Key</div>
-        <div style='line-height:2;'>
-            <span style="display:inline-block;width:22px;height:18px;background:#009688;border-radius:4px;margin-right:8px;"></span> STIB Route
-            <br>
-        </div>
-        """, unsafe_allow_html=True)
+    st.markdown("""
+    <div style='font-weight:bold;margin-bottom:8px;'>Speed Color Key</div>
+    <div style='line-height:2;'>
+        <span style="display:inline-block;width:22px;height:18px;background:#8B0000;border-radius:4px;margin-right:8px;"></span> 0–10
+        <br>
+        <span style="display:inline-block;width:22px;height:18px;background:#FF0000;border-radius:4px;margin-right:8px;"></span> 10–20
+        <br>
+        <span style="display:inline-block;width:22px;height:18px;background:#FFA500;border-radius:4px;margin-right:8px;"></span> 20–30
+        <br>
+        <span style="display:inline-block;width:22px;height:18px;background:#FFFF00;border-radius:4px;margin-right:8px;"></span> 30–40
+        <br>
+        <span style="display:inline-block;width:22px;height:18px;background:#9ACD32;border-radius:4px;margin-right:8px;"></span> 40–50
+        <br>
+        <span style="display:inline-block;width:22px;height:18px;background:#00B050;border-radius:4px;margin-right:8px;"></span> 50+
+    </div>
+    """, unsafe_allow_html=True)
+
