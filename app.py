@@ -209,7 +209,7 @@ if selected_page == "Brussels":
 
     # --- Styling by category (optional visual variety) ---
     for _, row in gdf.iterrows():
-        color = "#009688"
+        color = "black"
         tooltip = "<br>".join([f"<b>{col}:</b> {row[col]}" for col in list(gdf.columns)[:3]])
         folium.GeoJson(
             row.geometry.__geo_interface__,
