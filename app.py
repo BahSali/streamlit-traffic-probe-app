@@ -244,7 +244,7 @@ if selected_page == "Brussels":
         st_folium(m, width=700, height=500)
     with col2:
         st.markdown("""
-        <div style='font-weight:bold;margin-bottom:8px;'>Speed Color Key</div>
+        <div style='font-weight:bold;margin-bottom:8px;'>Prediction Color Key</div>
         <div style='line-height:2;'>
             <span style="display:inline-block;width:22px;height:18px;background:#8B0000;border-radius:4px;margin-right:8px;"></span> 0–10
             <br>
@@ -259,4 +259,5 @@ if selected_page == "Brussels":
             <span style="display:inline-block;width:22px;height:18px;background:#00B050;border-radius:4px;margin-right:8px;"></span> 50+
         </div>
         """, unsafe_allow_html=True)
+
 
