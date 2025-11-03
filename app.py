@@ -178,9 +178,9 @@ if selected_page == "Ixelles-Etterbeek":
     # components.iframe(google_maps_url, width=700, height=500)
 
 
-# -------- Brussels -------
+# -------- Brussels --------
 if selected_page == "Brussels":
-   st.markdown(
+    st.markdown(
         "<h3 style='text-align:center; color:#009688;'>Brussels STIB Network Overview</h3>",
         unsafe_allow_html=True
     )
