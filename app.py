@@ -180,28 +180,52 @@ if selected_page == "Ixelles-Etterbeek":
 
 # -------- Brussels -------
 if selected_page == "Brussels":
-   # --- Fetch Shapefile ---
-    token = "dd246f5afde3eceba4aa392777df19de4f1b2e71339a2450c24e70e83a54ad3dbe1cff1a226b4f1b4a5954cab691d4e5eb4b74ab699520770bfba723041e9dca"
-    url = "https://api.mobilitytwin.brussels/stib/shapefile"
-    headers = {'Authorization': f'Bearer {token}'}
-    response = requests.get(url, headers=headers)
-    response.raise_for_status()
-    shapefile_data = response.json()
+   st.markdown(
+        "<h3 style='text-align:center; color:#009688;'>Brussels STIB Network Overview</h3>",
+        unsafe_allow_html=True
+    )
+    st.caption("Interactive visualization of STIB bus/tram network derived from the Brussels Mobility API.")
 
-    # --- Convert to GeoDataFrame ---
-    geometries = [shape(f["geometry"]) for f in shapefile_data["features"]]
-    df = pd.DataFrame([f["properties"] for f in shapefile_data["features"]])
-    gdf = gpd.GeoDataFrame(df, geometry=geometries, crs="EPSG:4326")
+    # --- Cached data fetch to avoid repeating downloads ---
+    @st.cache_data(show_spinner=False)
+    def fetch_stib_geojson():
+        token = "dd246f5afde3eceba4aa392777df19de4f1b2e71339a2450c24e70e83a54ad3dbe1cff1a226b4f1b4a5954cab691d4e5eb4b74ab699520770bfba723041e9dca"
+        url = "https://api.mobilitytwin.brussels/stib/shapefile"
+        headers = {'Authorization': f'Bearer {token}'}
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        shapefile_data = response.json()
 
-    # --- Plot on map ---
-    center = [gdf.geometry.centroid.y.mean(), gdf.geometry.centroid.x.mean()]
-    m = folium.Map(location=center, zoom_start=12)
+        geometries = [shape(f["geometry"]) for f in shapefile_data["features"]]
+        df = pd.DataFrame([f["properties"] for f in shapefile_data["features"]])
+        gdf = gpd.GeoDataFrame(df, geometry=geometries, crs="EPSG:4326")
+        return gdf
 
-    folium.GeoJson(
-        gdf,
-        name="STIB Segments",
-        tooltip=folium.GeoJsonTooltip(fields=list(gdf.columns)[:3])
-    ).add_to(m)
+    gdf = fetch_stib_geojson()
 
-    # --- Show interactive map in Streamlit ---
-    st_folium(m, width=700, height=500)
+    # --- Map setup like Ixelles-Etterbeek ---
+    map_center = [gdf.geometry.centroid.y.mean(), gdf.geometry.centroid.x.mean()]
+    m = folium.Map(location=map_center, zoom_start=12)
+
+    # --- Styling by category (optional visual variety) ---
+    for _, row in gdf.iterrows():
+        color = "#009688"
+        tooltip = "<br>".join([f"<b>{col}:</b> {row[col]}" for col in list(gdf.columns)[:3]])
+        folium.GeoJson(
+            row.geometry.__geo_interface__,
+            tooltip=tooltip,
+            style_function=lambda x, color=color: {"color": color, "weight": 3}
+        ).add_to(m)
+
+    # --- Map and legend side-by-side like Ixelles-Etterbeek ---
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        st_folium(m, width=700, height=500)
+    with col2:
+        st.markdown("""
+        <div style='font-weight:bold;margin-bottom:8px;'>Segment Color Key</div>
+        <div style='line-height:2;'>
+            <span style="display:inline-block;width:22px;height:18px;background:#009688;border-radius:4px;margin-right:8px;"></span> STIB Route
+            <br>
+        </div>
+        """, unsafe_allow_html=True)
