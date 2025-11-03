@@ -34,6 +34,14 @@ st.markdown(
 )
 st.caption("Interactive visualisation of real-time probe-derived bus speeds alongside estimation of overall traffic conditions across road segments.")
 
+# ---------- City Selector ----------
+selected_page = st.selectbox(
+    "Select area or city:",
+    ["-- Select --", "Ixelles-Etterbeek", "Brussels", "York"]
+)
+
+st.markdown("---") 
+
 # ---------- Data Loading ----------
 df = pd.read_csv("Brux_net.csv", sep=';')
     
