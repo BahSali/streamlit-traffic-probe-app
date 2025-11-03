@@ -5,7 +5,6 @@ import pandas as pd
 import folium
 from streamlit_folium import st_folium
 import os
-#import streamlit.components.v1 as components
 import geopandas as gpd
 import requests
 from shapely.geometry import shape
