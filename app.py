@@ -205,7 +205,7 @@ if selected_page == "Brussels":
 
     # --- Map setup like Ixelles-Etterbeek ---
     map_center = [gdf.geometry.centroid.y.mean(), gdf.geometry.centroid.x.mean()]
-    m = folium.Map(location=map_center, zoom_start=14)
+    m = folium.Map(location=map_center, zoom_start=10)
 
     # --- Styling by category (optional visual variety) ---
     for _, row in gdf.iterrows():
