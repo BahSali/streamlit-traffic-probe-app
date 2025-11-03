@@ -180,10 +180,6 @@ if selected_page == "Ixelles-Etterbeek":
 
 # -------- Brussels --------
 if selected_page == "Brussels":
-    st.markdown(
-        "<h3 style='text-align:center; color:#009688;'>Brussels STIB Network Overview</h3>",
-        unsafe_allow_html=True
-    )
     st.caption("Loading the transportation network...")
 
     # --- Cached data fetch to avoid repeating downloads ---
