@@ -203,11 +203,11 @@ if selected_page == "Brussels":
     # ---------- Button & Processing ----------
     col1, col2, col3 = st.columns([2, 3, 2])
     with col2:
-        st.button("Run Traffic Estimation (Click Me!)")
-        #if st.button("Run Traffic Estimation (Click Me!)"):
-         #   st.session_state["colorized"] = True 
+        #st.button("Run Traffic Estimation (Click Me!)")
+        if st.button("Run Traffic Estimation (Click Me!)"):
+            st.session_state["colorized"] = True 
 
-        #colorized = st.session_state.get("colorized", False)
+            colorized = st.session_state.get("colorized", False)
 
     # --- Cached data fetch to avoid repeating downloads ---
     @st.cache_data(show_spinner=False)
@@ -226,19 +226,23 @@ if selected_page == "Brussels":
 
     gdf = fetch_stib_geojson()
 
+    if st.session_state.get("colorized", False) and "brussels_speeds" not in st.session_state:
+        st.session_state["brussels_speeds"] = {
+            i: float(10 + 40 * np.random.rand()) for i in range(len(gdf))
+        }
+
     # --- Map setup like Ixelles-Etterbeek ---
     map_center = [gdf.geometry.centroid.y.mean(), gdf.geometry.centroid.x.mean()]
     m = folium.Map(location=map_center, zoom_start=11)
 
     # --- Styling by category (optional visual variety) ---
-    for _, row in gdf.iterrows():
-        if "colorized" in st.session_state and st.session_state["colorized"]:
-            speed = 10 + 40 * np.random.rand()
+    for idx, row in gdf.iterrows():
+        if st.session_state.get("colorized", False):
+            speed = st.session_state["brussels_speeds"][idx]
             color = get_speed_color(speed)
         else:
-            color = "black"
-
-        # tooltip = "<br>".join([f"<b>{col}:</b> {row[col]}" for col in list(gdf.columns)[:3]])
+            color = "black"  # پیش‌فرض
+    
         tooltip = f"<b>Line:</b> {row.get('ligne', 'N/A')}<br><b>Variant:</b> {row.get('variante', 'N/A')}"
         folium.GeoJson(
             row.geometry.__geo_interface__,
