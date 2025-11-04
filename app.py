@@ -229,7 +229,12 @@ if selected_page == "Brussels":
 
     # --- Styling by category (optional visual variety) ---
     for _, row in gdf.iterrows():
-        color = "black"
+        if "colorized" in st.session_state and st.session_state["colorized"]:
+            speed = 10 + 40 * np.random.rand()
+            color = get_speed_color(speed)
+        else:
+            color = "black"
+
         # tooltip = "<br>".join([f"<b>{col}:</b> {row[col]}" for col in list(gdf.columns)[:3]])
         tooltip = f"<b>Line:</b> {row.get('ligne', 'N/A')}<br><b>Variant:</b> {row.get('variante', 'N/A')}"
         folium.GeoJson(
