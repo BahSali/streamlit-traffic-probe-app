@@ -202,8 +202,12 @@ if selected_page == "Brussels":
     # ---------- Button & Processing ----------
     col1, col2, col3 = st.columns([2, 3, 2])
     with col2:
+        if "colorized" not in st.session_state:
+            st.session_state["colorized"] = False
         if st.button("Run Traffic Estimation (Click Me!)"):
-            st.session_state["colorized"] = True
+            st.session_state["colorized"] = not st.session_state["colorized"]
+        #if st.button("Run Traffic Estimation (Click Me!)"):
+         #   st.session_state["colorized"] = True
 
     # --- Cached data fetch to avoid repeating downloads ---
     @st.cache_data(show_spinner=False)
