@@ -182,32 +182,10 @@ if selected_page == "Ixelles-Etterbeek":
 # -------- Brussels --------
 if selected_page == "Brussels":
 
-    def get_speed_color(pred):
-        try:
-            pred = float(pred)
-        except:
-            return "gray"
-        if pred < 10:
-            return "#8B0000"   # dark red
-        elif pred < 20:
-            return "#FF0000"   # red
-        elif pred < 30:
-            return "#FFA500"   # orange
-        elif pred < 40:
-            return "#FFFF00"   # yellow
-        elif pred < 50:
-            return "#9ACD32"   # light green
-        else:
-            return "#00B050"   # green
-
     # ---------- Button & Processing ----------
     col1, col2, col3 = st.columns([2, 3, 2])
     with col2:
-        #st.button("Run Traffic Estimation (Click Me!)")
-        if st.button("Run Traffic Estimation (Click Me!)"):
-            st.session_state["colorized"] = True 
-
-            colorized = st.session_state.get("colorized", False)
+        st.button("Run Traffic Estimation (Click Me!)")
 
     # --- Cached data fetch to avoid repeating downloads ---
     @st.cache_data(show_spinner=False)
@@ -237,11 +215,8 @@ if selected_page == "Brussels":
 
     # --- Styling by category (optional visual variety) ---
     for idx, row in gdf.iterrows():
-        if st.session_state.get("colorized", False):
-            speed = st.session_state["brussels_speeds"][idx]
-            color = get_speed_color(speed)
-        else:
-            color = "black"  # پیش‌فرض
+        
+        color = "black"  # پیش‌فرض
     
         tooltip = f"<b>Line:</b> {row.get('ligne', 'N/A')}<br><b>Variant:</b> {row.get('variante', 'N/A')}"
         folium.GeoJson(
