@@ -281,26 +281,92 @@ if selected_page == "Brussels":
         </div>
         """, unsafe_allow_html=True)
 
+
 # -------- York --------
 if selected_page == "York":
 
-    import geopandas as gpd
-    import folium
-    from streamlit_folium import st_folium
+    # ---------- Button & Processing ----------
+    col1, col2, col3 = st.columns([2, 3, 2])
 
-    # --- Load the GeoPackage layer ---
+    # initialize session state
+    if "colorized_york" not in st.session_state:
+        st.session_state["colorized_york"] = False
+    if "york_speeds" not in st.session_state:
+        st.session_state["york_speeds"] = None
+
+    # Button with callback
+    with col2:
+        st.button(
+            "Run Traffic Estimation (Click Me!)",
+            key="run_york_colorize",
+            on_click=lambda: st.session_state.update(colorized_york=True)
+        )
+
+    # --- Load GeoPackage layer ---
     gdf = gpd.read_file("York_corridor_selection.gpkg")
 
-    # --- Center map based on geometry ---
+    import numpy as np
+    def get_speed_color(pred):
+        try:
+            pred = float(pred)
+        except:
+            return "gray"
+        if pred < 10:
+            return "#8B0000"   # dark red
+        elif pred < 20:
+            return "#FF0000"   # red
+        elif pred < 30:
+            return "#FFA500"   # orange
+        elif pred < 40:
+            return "#FFFF00"   # yellow
+        elif pred < 50:
+            return "#9ACD32"   # light green
+        else:
+            return "#00B050"   # green
+
+    # create random "speed" values once when button pressed
+    if st.session_state["colorized_york"] and st.session_state["york_speeds"] is None:
+        st.session_state["york_speeds"] = {
+            i: float(10 + 40 * np.random.rand()) for i in range(len(gdf))
+        }
+
+    # --- Map setup ---
     map_center = [gdf.geometry.centroid.y.mean(), gdf.geometry.centroid.x.mean()]
     m = folium.Map(location=map_center, zoom_start=13)
 
-    # --- Add layer to map ---
-    folium.GeoJson(
-        gdf,
-        name="York Corridor",
-        tooltip=folium.GeoJsonTooltip(fields=list(gdf.columns)[:3])
-    ).add_to(m)
+    # --- Draw each segment ---
+    for idx, row in gdf.iterrows():
+        if st.session_state["colorized_york"] and st.session_state["york_speeds"] is not None:
+            speed = st.session_state["york_speeds"][idx]
+            color = get_speed_color(speed)
+        else:
+            color = "black"  # default color before pressing the button
 
-    # --- Display map ---
-    st_folium(m, width=700, height=500)
+        tooltip = "<br>".join([f"<b>{col}:</b> {row[col]}" for col in list(gdf.columns)[:3]])
+        folium.GeoJson(
+            row.geometry.__geo_interface__,
+            tooltip=tooltip,
+            style_function=lambda x, color=color: {"color": color, "weight": 2.5}
+        ).add_to(m)
+
+    # --- Map and color legend side-by-side ---
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        st_folium(m, width=700, height=500)
+    with col2:
+        st.markdown("""
+        <div style='font-weight:bold;margin-bottom:8px;'>Prediction Color Key</div>
+        <div style='line-height:2;'>
+            <span style="display:inline-block;width:22px;height:18px;background:#8B0000;border-radius:4px;margin-right:8px;"></span> 0–10
+            <br>
+            <span style="display:inline-block;width:22px;height:18px;background:#FF0000;border-radius:4px;margin-right:8px;"></span> 10–20
+            <br>
+            <span style="display:inline-block;width:22px;height:18px;background:#FFA500;border-radius:4px;margin-right:8px;"></span> 20–30
+            <br>
+            <span style="display:inline-block;width:22px;height:18px;background:#FFFF00;border-radius:4px;margin-right:8px;"></span> 30–40
+            <br>
+            <span style="display:inline-block;width:22px;height:18px;background:#9ACD32;border-radius:4px;margin-right:8px;"></span> 40–50
+            <br>
+            <span style="display:inline-block;width:22px;height:18px;background:#00B050;border-radius:4px;margin-right:8px;"></span> 50+
+        </div>
+        """, unsafe_allow_html=True)
