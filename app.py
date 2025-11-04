@@ -181,10 +181,30 @@ if selected_page == "Ixelles-Etterbeek":
 # -------- Brussels --------
 if selected_page == "Brussels":
 
+    def get_speed_color(pred):
+    try:
+        pred = float(pred)
+    except:
+        return "gray"
+    if pred < 10:
+        return "#8B0000"   # dark red
+    elif pred < 20:
+        return "#FF0000"   # red
+    elif pred < 30:
+        return "#FFA500"   # orange
+    elif pred < 40:
+        return "#FFFF00"   # yellow
+    elif pred < 50:
+        return "#9ACD32"   # light green
+    else:
+        return "#00B050"   # green
+
     # ---------- Button & Processing ----------
     col1, col2, col3 = st.columns([2, 3, 2])
     with col2:
-        st.button("Run Traffic Estimation (Click Me!)")
+        #st.button("Run Traffic Estimation (Click Me!)")
+        if st.button("Run Traffic Estimation (Click Me!)"):
+        st.session_state["colored"] = True
 
     # --- Cached data fetch to avoid repeating downloads ---
     @st.cache_data(show_spinner=False)
