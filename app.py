@@ -280,3 +280,27 @@ if selected_page == "Brussels":
             <span style="display:inline-block;width:22px;height:18px;background:#00B050;border-radius:4px;margin-right:8px;"></span> 50+
         </div>
         """, unsafe_allow_html=True)
+
+# -------- York --------
+if selected_page == "York":
+
+    import geopandas as gpd
+    import folium
+    from streamlit_folium import st_folium
+
+    # --- Load the GeoPackage layer ---
+    gdf = gpd.read_file("York_corridor_selection.gpkg")
+
+    # --- Center map based on geometry ---
+    map_center = [gdf.geometry.centroid.y.mean(), gdf.geometry.centroid.x.mean()]
+    m = folium.Map(location=map_center, zoom_start=13)
+
+    # --- Add layer to map ---
+    folium.GeoJson(
+        gdf,
+        name="York Corridor",
+        tooltip=folium.GeoJsonTooltip(fields=list(gdf.columns)[:3])
+    ).add_to(m)
+
+    # --- Display map ---
+    st_folium(m, width=700, height=500)
