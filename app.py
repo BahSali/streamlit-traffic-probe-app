@@ -204,8 +204,11 @@ if selected_page == "Brussels":
     with col2:
         if "colorized" not in st.session_state:
             st.session_state["colorized"] = False
+    
         if st.button("Run Traffic Estimation (Click Me!)"):
-            st.session_state["colorized"] = not st.session_state["colorized"]
+            st.session_state["colorized"] = True
+            st.rerun()
+            
         #if st.button("Run Traffic Estimation (Click Me!)"):
          #   st.session_state["colorized"] = True
 
