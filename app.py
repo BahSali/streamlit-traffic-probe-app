@@ -8,6 +8,7 @@ import os
 import geopandas as gpd
 import requests
 from shapely.geometry import shape
+import numpay as np
 
 # ---------- Theme Style for Button ----------
 btn_style = """
