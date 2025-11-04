@@ -327,7 +327,7 @@ if selected_page == "York":
     # create random "speed" values once when button pressed
     if st.session_state["colorized_york"] and st.session_state["york_speeds"] is None:
         st.session_state["york_speeds"] = {
-            i: float(10 + 40 * np.random.rand()) for i in range(len(gdf))
+            i: float(10 + 20 * np.random.rand()) for i in range(len(gdf))
         }
 
     # --- Map setup ---
