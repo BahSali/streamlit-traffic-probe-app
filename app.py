@@ -296,11 +296,12 @@ if selected_page == "York":
 
     # Button with callback
     with col2:
-        st.button(
-            "Run Traffic Estimation (Click Me!)",
-            key="run_york_colorize",
-            on_click=lambda: st.session_state.update(colorized_york=True)
-        )
+        st.button("Run Traffic Estimation (Click Me!)")
+        #st.button(
+        #    "Run Traffic Estimation (Click Me!)",
+        #    key="run_york_colorize",
+        #   on_click=lambda: st.session_state.update(colorized_york=True)
+        #)
 
     # --- Load GeoPackage layer ---
     gdf = gpd.read_file("York_corridor_selection.gpkg")
