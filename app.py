@@ -203,6 +203,10 @@ if selected_page == "Brussels":
     col1, col2, col3 = st.columns([2, 3, 2])
     with col2:
         if st.button("Run Traffic Estimation (Click Me!)"):
+            if "brussels_speeds" not in st.session_state:
+                st.session_state["brussels_speeds"] = {
+                    i: float(10 + 40 * np.random.rand()) for i in range(len(gdf))
+                }
             st.session_state["colorized"] = True
 
     # --- Cached data fetch to avoid repeating downloads ---
