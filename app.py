@@ -204,8 +204,13 @@ if selected_page == "Brussels":
     col1, col2, col3 = st.columns([2, 3, 2])
     with col2:
         #st.button("Run Traffic Estimation (Click Me!)")
-        if st.button("Run Traffic Estimation (Click Me!)"):
-            st.session_state["colorized"] = True
+        if "colorized" not in st.session_state:
+            st.session_state["colorized"] = False
+
+        col1, col2, col3 = st.columns([2, 3, 2])
+        with col2:
+            if st.button("Run Traffic Estimation (Click Me!)", type="primary"):
+                st.session_state["colorized"] = True
 
     # --- Cached data fetch to avoid repeating downloads ---
     @st.cache_data(show_spinner=False)
