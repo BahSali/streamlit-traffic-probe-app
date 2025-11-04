@@ -237,7 +237,7 @@ if selected_page == "Brussels":
     # Create test speeds only once after clicking the button
     if st.session_state["colorized"] and st.session_state["brussels_speeds"] is None:
         st.session_state["brussels_speeds"] = {
-            i: float(10 + 40 * np.random.rand()) for i in range(len(gdf))
+            i: float(3 + 30 * np.random.rand()) for i in range(len(gdf))
         }
 
     # --- Map setup like Ixelles-Etterbeek ---
