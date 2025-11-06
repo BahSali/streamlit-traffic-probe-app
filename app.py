@@ -32,7 +32,7 @@ st.markdown(btn_style, unsafe_allow_html=True)
 
 # ---------- Page Title and Caption ----------
 st.markdown(
-    "<h1 style='text-align:center; color:#009688;'> Real-time Average Speed Estimator</h1>",
+    "<h1 style='text-align:center; color:#009688;'> Urban Area (Real-time) Average Speed Estimator</h1>",
     unsafe_allow_html=True
 )
 st.caption("Interactive visualisation of real-time probe-derived bus speeds alongside estimation of overall traffic conditions across road segments.")
