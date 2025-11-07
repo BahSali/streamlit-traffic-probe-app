@@ -304,8 +304,8 @@ if selected_page == "York":
         #)
 
     # --- Load GeoPackage layer ---
-    #gdf = gpd.read_file("York_corridor_selection.gpkg")
-    gdf = gpd.read_file("test_dynamic_links.gpkg-shm")
+    gdf = gpd.read_file("York_corridor_selection.gpkg")
+    
     import numpy as np
     def get_speed_color(pred):
         try:
