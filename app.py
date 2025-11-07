@@ -304,7 +304,7 @@ if selected_page == "York":
         #)
 
     # --- Load GeoPackage layer ---
-    gdf = gpd.read_file("York_roads_within_3km.gpkg.gpkg")
+    gdf = gpd.read_file("York_roads_within_3km.gpkg")
     
     import numpy as np
     def get_speed_color(pred):
