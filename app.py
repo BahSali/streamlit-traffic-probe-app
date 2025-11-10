@@ -367,7 +367,7 @@ if selected_page == "York":
                 gdf["Cariad_speed"] = gdf["segment_id"].apply(lambda sid: link_data.get(sid, np.nan))
                 gdf["Estimated_speed"] = gdf["segment_id"].apply(lambda sid: proxy_data.get(sid, np.nan))
 
-                st.success(f"✅ Data assigned successfully for {len(common_ids)} matching segments.")
+                st.success(f"✅ Data assigned successfully for all {len(common_ids)} segments.")
 
     # --- Map setup ---
     map_center = [gdf.geometry.centroid.y.mean(), gdf.geometry.centroid.x.mean()]
