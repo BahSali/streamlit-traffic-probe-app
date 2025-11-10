@@ -308,6 +308,16 @@ if selected_page == "York":
     # --- Load GeoPackage ---
     gdf = gpd.read_file("York_roads_within_3km.gpkg")
 
+    # --- Detect the ID column automatically ---
+    possible_ids = ["segment_id", "Segment_ID", "id", "ID", "road_id", "roadID", "road_name"]
+    id_col = None
+    for colname in possible_ids:
+        if colname in gdf.columns:
+            id_col = colname
+            break
+    if id_col is None:
+        id_col = gdf.columns[0]  # fallback to first column
+
     # --- Define color scale ---
     def get_speed_color(pred):
         try:
@@ -315,17 +325,17 @@ if selected_page == "York":
         except:
             return "gray"
         if pred < 10:
-            return "#8B0000"   # dark red
+            return "#8B0000"
         elif pred < 20:
-            return "#FF0000"   # red
+            return "#FF0000"
         elif pred < 30:
-            return "#FFA500"   # orange
+            return "#FFA500"
         elif pred < 40:
-            return "#FFFF00"   # yellow
+            return "#FFFF00"
         elif pred < 50:
-            return "#9ACD32"   # light green
+            return "#9ACD32"
         else:
-            return "#00B050"   # green
+            return "#00B050"
 
     # --- When button is pressed: run traffic estimation ---
     if st.session_state["colorized_york"]:
@@ -338,21 +348,14 @@ if selected_page == "York":
         proxy_df.iloc[:, 0] = pd.to_datetime(proxy_df.iloc[:, 0], errors="coerce")
         link_df.iloc[:, 0]  = pd.to_datetime(link_df.iloc[:, 0], errors="coerce")
 
-        # Fix +1 hour offset in link file
-        try:
-            # Parse timestamps correctly and fix +1 hour offset in link file
-            link_times = pd.to_datetime(link_df.iloc[:, 0], errors="coerce")
-            
-            # Remove timezone info if present, then subtract one hour
-            if pd.api.types.is_datetime64_any_dtype(link_times):
-                link_times = link_times.dt.tz_localize(None, ambiguous='NaT', nonexistent='shift_forward')
-            else:
-                link_times = pd.to_datetime(link_times, utc=True).dt.tz_localize(None)
-            
-            link_df.iloc[:, 0] = link_times - pd.Timedelta(hours=1)
-
-        except TypeError:
-            link_df.iloc[:, 0] = link_df.iloc[:, 0] - pd.Timedelta(hours=1)
+        # Fix +1 hour offset safely
+        link_times = pd.to_datetime(link_df.iloc[:, 0], errors="coerce")
+        if pd.api.types.is_datetime64_any_dtype(link_times):
+            try:
+                link_times = link_times.dt.tz_localize(None)
+            except Exception:
+                link_times = link_times
+        link_df.iloc[:, 0] = link_times - pd.Timedelta(hours=1)
 
         # Find latest time in proxy
         latest_time = proxy_df.iloc[:, 0].max()
@@ -362,7 +365,7 @@ if selected_page == "York":
         link_row  = link_df [link_df.iloc[:, 0]  == latest_time]
 
         if proxy_row.empty or link_row.empty:
-            st.error("Matching timestamp not found after time correction.")
+            st.error("⚠️ Matching timestamp not found after time correction.")
         else:
             proxy_data = proxy_row.iloc[0, 1:].to_dict()
             link_data  = link_row.iloc[0, 1:].to_dict()
@@ -370,11 +373,12 @@ if selected_page == "York":
 
             # Assign estimated speeds to segments
             speed_map = {sid: proxy_data[sid] for sid in common_ids}
-            gdf["estimated_speed"] = gdf["segment_id"].map(speed_map)  # or use 'ID' if that's your column
+            gdf["estimated_speed"] = gdf[id_col].map(speed_map)
 
+            # Save to session
             st.session_state["york_speeds"] = gdf["estimated_speed"].to_dict()
 
-            st.success(f"Traffic estimation completed for {len(common_ids)} segments at {latest_time}.")
+            st.success(f"✅ Traffic estimation completed for {len(common_ids)} segments at {latest_time}.")
 
     # --- Map setup ---
     map_center = [gdf.geometry.centroid.y.mean(), gdf.geometry.centroid.x.mean()]
@@ -388,7 +392,7 @@ if selected_page == "York":
         else:
             color = "black"
 
-        tooltip = f"<b>ID:</b> {row.get('segment_id', idx)}<br><b>Speed:</b> {row.get('estimated_speed', 'N/A')}"
+        tooltip = f"<b>ID:</b> {row.get(id_col, idx)}<br><b>Estimated speed:</b> {row.get('estimated_speed', 'N/A')}"
         folium.GeoJson(
             row.geometry.__geo_interface__,
             tooltip=tooltip,
