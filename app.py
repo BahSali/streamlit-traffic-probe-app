@@ -285,122 +285,72 @@ if selected_page == "Brussels":
 # -------- York --------
 if selected_page == "York":
 
-    import pandas as pd
-    import geopandas as gpd
-    import numpy as np
-    import folium
-    from streamlit_folium import st_folium
-    import streamlit as st
-    import os
-
-    # ---------- Button & Session State ----------
+    # ---------- Button & Processing ----------
     col1, col2, col3 = st.columns([2, 3, 2])
 
+    # initialize session state
     if "colorized_york" not in st.session_state:
         st.session_state["colorized_york"] = False
     if "york_speeds" not in st.session_state:
         st.session_state["york_speeds"] = None
 
+    # Button with callback
     with col2:
-        if st.button("Run Traffic Estimation (Click Me!)"):
-            st.session_state["colorized_york"] = True
+        st.button("Run Traffic Estimation (Click Me!)")
+        #st.button(
+        #    "Run Traffic Estimation (Click Me!)",
+        #    key="run_york_colorize",
+        #   on_click=lambda: st.session_state.update(colorized_york=True)
+        #)
 
     # --- Load GeoPackage layer ---
     gdf = gpd.read_file("York_roads_within_3km.gpkg")
-
-    # --- Color scale ---
+    
+    import numpy as np
     def get_speed_color(pred):
         try:
             pred = float(pred)
         except:
             return "gray"
-        if pred < 10: return "#8B0000"
-        elif pred < 20: return "#FF0000"
-        elif pred < 30: return "#FFA500"
-        elif pred < 40: return "#FFFF00"
-        elif pred < 50: return "#9ACD32"
-        else: return "#00B050"
-
-    # --- When button pressed ---
-    if st.session_state["colorized_york"]:
-        st.write("📂 Current working directory:", os.getcwd())
-
-        proxy_path = "test_proxy_estimates_filtered.csv"
-        link_path  = "test_link_speed_timeseries_15min_wide.csv"
-
-        # --- Check files exist ---
-        if not os.path.exists(proxy_path):
-            st.error(f"❌ File not found: {proxy_path}")
-        elif not os.path.exists(link_path):
-            st.error(f"❌ File not found: {link_path}")
+        if pred < 10:
+            return "#8B0000"   # dark red
+        elif pred < 20:
+            return "#FF0000"   # red
+        elif pred < 30:
+            return "#FFA500"   # orange
+        elif pred < 40:
+            return "#FFFF00"   # yellow
+        elif pred < 50:
+            return "#9ACD32"   # light green
         else:
-            # --- Load CSVs ---
-            proxy_df = pd.read_csv(proxy_path)
-            link_df  = pd.read_csv(link_path)
+            return "#00B050"   # green
 
-            # --- Parse time columns ---
-            proxy_df.iloc[:, 0] = pd.to_datetime(proxy_df.iloc[:, 0], errors="coerce")
-
-            # ✅ FIX: Add 1 hour to link times and drop timezone
-            link_time = pd.to_datetime(link_df.iloc[:, 0], errors="coerce", utc=True)
-            link_time_fixed = (link_time + pd.Timedelta(hours=1)).dt.tz_convert(None)
-            link_df.iloc[:, 0] = link_time_fixed
-
-            # --- Get latest timestamp ---
-            latest_time = proxy_df.iloc[:, 0].max()
-            st.write("🕒 Latest timestamp from proxy:", latest_time)
-
-            # --- Debug check timestamps ---
-            st.write("🔹 Proxy timestamps sample:", proxy_df.iloc[:, 0].tail(3).astype(str).tolist())
-            st.write("🔹 Link timestamps sample:", link_df.iloc[:, 0].tail(3).astype(str).tolist())
-
-            # --- Match timestamps ---
-            proxy_row = proxy_df[proxy_df.iloc[:, 0] == latest_time]
-            link_row  = link_df [link_df.iloc[:, 0]  == latest_time]
-
-            if proxy_row.empty:
-                st.error("❌ No matching timestamp found in proxy file after parsing.")
-            elif link_row.empty:
-                st.error("⚠️ No matching timestamp found in link file after time correction.")
-            else:
-                proxy_data = proxy_row.iloc[0, 1:].to_dict()
-                link_data  = link_row.iloc[0, 1:].to_dict()
-                common_ids = set(proxy_data.keys()) & set(link_data.keys())
-
-                # Assign data to map GeoDataFrame
-                gdf["Cariad_speed"] = gdf.apply(
-                    lambda r: link_data.get(r["No-Fromnodeno"], np.nan), axis=1)
-                gdf["Estimated_speed"] = gdf.apply(
-                    lambda r: proxy_data.get(r["No-Fromnodeno"], np.nan), axis=1)
-                gdf["Timestamp"] = latest_time
-
-                st.success(f"✅ Data assigned successfully for {len(common_ids)} matching segments.")
+    # create random "speed" values once when button pressed
+    if st.session_state["colorized_york"] and st.session_state["york_speeds"] is None:
+        st.session_state["york_speeds"] = {
+            i: float(10 + 20 * np.random.rand()) for i in range(len(gdf))
+        }
 
     # --- Map setup ---
     map_center = [gdf.geometry.centroid.y.mean(), gdf.geometry.centroid.x.mean()]
     m = folium.Map(location=map_center, zoom_start=13)
 
     # --- Draw each segment ---
-    for _, row in gdf.iterrows():
-        color = get_speed_color(row.get("Estimated_speed", np.nan)) if st.session_state["colorized_york"] else "black"
+    for idx, row in gdf.iterrows():
+        if st.session_state["colorized_york"] and st.session_state["york_speeds"] is not None:
+            speed = st.session_state["york_speeds"][idx]
+            color = get_speed_color(speed)
+        else:
+            color = "black"  # default color before pressing the button
 
-        tooltip_fields = list(gdf.columns)[:3]
-        tooltip_info = [f"<b>{col}:</b> {row[col]}" for col in tooltip_fields]
-
-        if st.session_state["colorized_york"]:
-            tooltip_info += [
-                f"<b>Cariad speed:</b> {row.get('Cariad_speed', 'N/A')}",
-                f"<b>Estimated speed:</b> {row.get('Estimated_speed', 'N/A')}",
-                f"<b>Timestamp:</b> {row.get('Timestamp', 'N/A')}",
-            ]
-
+        tooltip = "<br>".join([f"<b>{col}:</b> {row[col]}" for col in list(gdf.columns)[:3]])
         folium.GeoJson(
             row.geometry.__geo_interface__,
-            tooltip="<br>".join(tooltip_info),
+            tooltip=tooltip,
             style_function=lambda x, color=color: {"color": color, "weight": 2.5}
         ).add_to(m)
 
-    # --- Display map and legend ---
+    # --- Map and color legend side-by-side ---
     col1, col2 = st.columns([4, 1])
     with col1:
         st_folium(m, width=700, height=500)
@@ -421,6 +371,8 @@ if selected_page == "York":
             <span style="display:inline-block;width:22px;height:18px;background:#00B050;border-radius:4px;margin-right:8px;"></span> 50+
         </div>
         """, unsafe_allow_html=True)
+
+
 
 
 
