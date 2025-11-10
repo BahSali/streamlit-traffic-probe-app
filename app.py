@@ -328,15 +328,15 @@ if selected_page == "York":
         proxy_df = pd.read_csv(proxy_path)
         link_df  = pd.read_csv(link_path)
 
-        # Parse and fix timestamps
-        proxy_df.iloc[:, 0] = pd.to_datetime(proxy_df.iloc[:, 0], errors="coerce")
-        link_df.iloc[:, 0]  = pd.to_datetime(link_df.iloc[:, 0], errors="coerce")
-        try:
-            link_df.iloc[:, 0] = (link_df.iloc[:, 0] - pd.Timedelta(hours=1)).dt.tz_localize(None)
-        except TypeError:
-            link_df.iloc[:, 0] = link_df.iloc[:, 0] - pd.Timedelta(hours=1)
+        # --- Convert and fix time columns safely ---
+        proxy_df.iloc[:, 0] = pd.to_datetime(proxy_df.iloc[:, 0], errors="coerce", utc=False)
 
-        # Find latest timestamp
+        # Force timezone-aware, subtract 1 hour, then drop timezone
+        link_time = pd.to_datetime(link_df.iloc[:, 0], errors="coerce", utc=True)
+        link_time = (link_time - pd.Timedelta(hours=1)).dt.tz_convert(None)
+        link_df.iloc[:, 0] = link_time
+
+        # --- Find latest timestamp ---
         latest_time = proxy_df.iloc[:, 0].max()
 
         proxy_row = proxy_df[proxy_df.iloc[:, 0] == latest_time]
@@ -347,7 +347,7 @@ if selected_page == "York":
             link_data  = link_row.iloc[0, 1:].to_dict()
             common_ids = set(proxy_data.keys()) & set(link_data.keys())
 
-            # Assign speeds to segments
+            # Assign speeds to GeoDataFrame
             gdf["Cariad_speed"] = gdf.apply(
                 lambda r: link_data.get(r["No-Fromnodeno"], np.nan), axis=1)
             gdf["Estimated_speed"] = gdf.apply(
@@ -364,10 +364,9 @@ if selected_page == "York":
     for _, row in gdf.iterrows():
         color = get_speed_color(row.get("Estimated_speed", np.nan)) if st.session_state["colorized_york"] else "black"
 
-        tooltip_fields = list(gdf.columns)[:3]  # the original 3 fields
+        tooltip_fields = list(gdf.columns)[:3]
         tooltip_info = [f"<b>{col}:</b> {row[col]}" for col in tooltip_fields]
 
-        # Add 3 new lines if colorized
         if st.session_state["colorized_york"]:
             tooltip_info += [
                 f"<b>Cariad speed:</b> {row.get('Cariad_speed', 'N/A')}",
@@ -402,5 +401,6 @@ if selected_page == "York":
             <span style="display:inline-block;width:22px;height:18px;background:#00B050;border-radius:4px;margin-right:8px;"></span> 50+
         </div>
         """, unsafe_allow_html=True)
+
 
 
