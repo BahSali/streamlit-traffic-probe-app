@@ -323,7 +323,6 @@ if selected_page == "York":
 
     # --- When button pressed ---
     if st.session_state["colorized_york"]:
-        st.write("📂 Current working directory:", os.getcwd())
 
         proxy_path = "test_proxy_estimates_filtered.csv"
         link_path  = "test_link_speed_timeseries_15min_wide.csv"
@@ -339,18 +338,14 @@ if selected_page == "York":
             # --- Parse time columns ---
             proxy_df.iloc[:, 0] = pd.to_datetime(proxy_df.iloc[:, 0], errors="coerce")
 
-            # ✅ FIX: Add 1 hour to link times and drop timezone
+            # ✅ Fix time offset (+1h)
             link_time = pd.to_datetime(link_df.iloc[:, 0], errors="coerce", utc=True)
             link_time_fixed = (link_time + pd.Timedelta(hours=1)).dt.tz_convert(None)
             link_df.iloc[:, 0] = link_time_fixed
 
             # --- Get latest timestamp ---
             latest_time = proxy_df.iloc[:, 0].max()
-            st.write("🕒 Latest timestamp from proxy:", latest_time)
-
-            # --- Debug timestamps ---
-            st.write("🔹 Proxy timestamps sample:", proxy_df.iloc[:, 0].tail(3).astype(str).tolist())
-            st.write("🔹 Link timestamps sample:", link_df.iloc[:, 0].tail(3).astype(str).tolist())
+            st.write("🕒 Latest timestamp in dataset:", latest_time)
 
             # --- Match timestamps ---
             proxy_row = proxy_df[proxy_df.iloc[:, 0] == latest_time]
@@ -365,13 +360,12 @@ if selected_page == "York":
                 link_data  = link_row.iloc[0, 1:].to_dict()
                 common_ids = set(proxy_data.keys()) & set(link_data.keys())
 
-                # ✅ Create composite ID column: "NO-FROMNODENO"
+                # ✅ Build composite ID
                 gdf["segment_id"] = gdf.apply(lambda r: f"{int(r['NO'])}-{int(r['FROMNODENO'])}", axis=1)
 
-                # Assign data to GeoDataFrame
+                # Assign data
                 gdf["Cariad_speed"] = gdf["segment_id"].apply(lambda sid: link_data.get(sid, np.nan))
                 gdf["Estimated_speed"] = gdf["segment_id"].apply(lambda sid: proxy_data.get(sid, np.nan))
-                gdf["Timestamp"] = latest_time
 
                 st.success(f"✅ Data assigned successfully for {len(common_ids)} matching segments.")
 
@@ -389,8 +383,7 @@ if selected_page == "York":
         if st.session_state["colorized_york"]:
             tooltip_info += [
                 f"<b>Cariad speed:</b> {row.get('Cariad_speed', 'N/A')}",
-                f"<b>Estimated speed:</b> {row.get('Estimated_speed', 'N/A')}",
-                f"<b>Timestamp:</b> {row.get('Timestamp', 'N/A')}",
+                f"<b>Estimated speed:</b> {row.get('Estimated_speed', 'N/A')}"
             ]
 
         folium.GeoJson(
@@ -420,8 +413,3 @@ if selected_page == "York":
             <span style="display:inline-block;width:22px;height:18px;background:#00B050;border-radius:4px;margin-right:8px;"></span> 50+
         </div>
         """, unsafe_allow_html=True)
-
-
-
-
-
