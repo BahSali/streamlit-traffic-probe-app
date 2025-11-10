@@ -285,28 +285,30 @@ if selected_page == "Brussels":
 # -------- York --------
 if selected_page == "York":
 
-    # ---------- Button & Processing ----------
+    import pandas as pd
+    import geopandas as gpd
+    import numpy as np
+    import folium
+    from streamlit_folium import st_folium
+    import streamlit as st
+
+    # ---------- Button & Session State ----------
     col1, col2, col3 = st.columns([2, 3, 2])
 
-    # initialize session state
     if "colorized_york" not in st.session_state:
         st.session_state["colorized_york"] = False
     if "york_speeds" not in st.session_state:
         st.session_state["york_speeds"] = None
 
-    # Button with callback
+    # --- Button callback ---
     with col2:
-        st.button("Run Traffic Estimation (Click Me!)")
-        #st.button(
-        #    "Run Traffic Estimation (Click Me!)",
-        #    key="run_york_colorize",
-        #   on_click=lambda: st.session_state.update(colorized_york=True)
-        #)
+        if st.button("Run Traffic Estimation (Click Me!)"):
+            st.session_state["colorized_york"] = True
 
-    # --- Load GeoPackage layer ---
+    # --- Load GeoPackage ---
     gdf = gpd.read_file("York_roads_within_3km.gpkg")
-    
-    import numpy as np
+
+    # --- Define color scale ---
     def get_speed_color(pred):
         try:
             pred = float(pred)
@@ -325,11 +327,44 @@ if selected_page == "York":
         else:
             return "#00B050"   # green
 
-    # create random "speed" values once when button pressed
-    if st.session_state["colorized_york"] and st.session_state["york_speeds"] is None:
-        st.session_state["york_speeds"] = {
-            i: float(10 + 20 * np.random.rand()) for i in range(len(gdf))
-        }
+    # --- When button is pressed: run traffic estimation ---
+    if st.session_state["colorized_york"]:
+
+        # Read the two CSV files
+        proxy_df = pd.read_csv("test_proxy_estimates_filtered.csv")
+        link_df  = pd.read_csv("test_link_speed_timeseries_15min_wide.csv")
+
+        # Parse timestamps
+        proxy_df.iloc[:, 0] = pd.to_datetime(proxy_df.iloc[:, 0], errors="coerce")
+        link_df.iloc[:, 0]  = pd.to_datetime(link_df.iloc[:, 0], errors="coerce")
+
+        # Fix +1 hour offset in link file
+        try:
+            link_df.iloc[:, 0] = (link_df.iloc[:, 0] - pd.Timedelta(hours=1)).dt.tz_localize(None)
+        except TypeError:
+            link_df.iloc[:, 0] = link_df.iloc[:, 0] - pd.Timedelta(hours=1)
+
+        # Find latest time in proxy
+        latest_time = proxy_df.iloc[:, 0].max()
+
+        # Extract matching rows
+        proxy_row = proxy_df[proxy_df.iloc[:, 0] == latest_time]
+        link_row  = link_df [link_df.iloc[:, 0]  == latest_time]
+
+        if proxy_row.empty or link_row.empty:
+            st.error("Matching timestamp not found after time correction.")
+        else:
+            proxy_data = proxy_row.iloc[0, 1:].to_dict()
+            link_data  = link_row.iloc[0, 1:].to_dict()
+            common_ids = sorted(set(proxy_data.keys()) & set(link_data.keys()))
+
+            # Assign estimated speeds to segments
+            speed_map = {sid: proxy_data[sid] for sid in common_ids}
+            gdf["estimated_speed"] = gdf["segment_id"].map(speed_map)  # or use 'ID' if that's your column
+
+            st.session_state["york_speeds"] = gdf["estimated_speed"].to_dict()
+
+            st.success(f"Traffic estimation completed for {len(common_ids)} segments at {latest_time}.")
 
     # --- Map setup ---
     map_center = [gdf.geometry.centroid.y.mean(), gdf.geometry.centroid.x.mean()]
@@ -338,19 +373,19 @@ if selected_page == "York":
     # --- Draw each segment ---
     for idx, row in gdf.iterrows():
         if st.session_state["colorized_york"] and st.session_state["york_speeds"] is not None:
-            speed = st.session_state["york_speeds"][idx]
+            speed = st.session_state["york_speeds"].get(idx, None)
             color = get_speed_color(speed)
         else:
-            color = "black"  # default color before pressing the button
+            color = "black"
 
-        tooltip = "<br>".join([f"<b>{col}:</b> {row[col]}" for col in list(gdf.columns)[:3]])
+        tooltip = f"<b>ID:</b> {row.get('segment_id', idx)}<br><b>Speed:</b> {row.get('estimated_speed', 'N/A')}"
         folium.GeoJson(
             row.geometry.__geo_interface__,
             tooltip=tooltip,
             style_function=lambda x, color=color: {"color": color, "weight": 2.5}
         ).add_to(m)
 
-    # --- Map and color legend side-by-side ---
+    # --- Display map and legend ---
     col1, col2 = st.columns([4, 1])
     with col1:
         st_folium(m, width=700, height=500)
