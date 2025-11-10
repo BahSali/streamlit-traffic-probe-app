@@ -291,6 +291,7 @@ if selected_page == "York":
     import folium
     from streamlit_folium import st_folium
     import streamlit as st
+    import os
 
     # ---------- Button & Session State ----------
     col1, col2, col3 = st.columns([2, 3, 2])
@@ -307,7 +308,7 @@ if selected_page == "York":
     # --- Load GeoPackage layer ---
     gdf = gpd.read_file("York_roads_within_3km.gpkg")
 
-    # --- Function for color scale ---
+    # --- Color scale ---
     def get_speed_color(pred):
         try:
             pred = float(pred)
@@ -320,41 +321,60 @@ if selected_page == "York":
         elif pred < 50: return "#9ACD32"
         else: return "#00B050"
 
-    # --- When button pressed, load and assign data ---
+    # --- When button pressed ---
     if st.session_state["colorized_york"]:
+        st.write("📂 Current working directory:", os.getcwd())
+
         proxy_path = "test_proxy_estimates_filtered.csv"
         link_path  = "test_link_speed_timeseries_15min_wide.csv"
 
-        proxy_df = pd.read_csv(proxy_path)
-        link_df  = pd.read_csv(link_path)
-
-        # --- Convert and fix time columns safely ---
-        proxy_df.iloc[:, 0] = pd.to_datetime(proxy_df.iloc[:, 0], errors="coerce", utc=False)
-
-        # Force timezone-aware, subtract 1 hour, then drop timezone
-        link_time = pd.to_datetime(link_df.iloc[:, 0], errors="coerce", utc=True)
-        link_time = (link_time - pd.Timedelta(hours=1)).dt.tz_convert(None)
-        link_df.iloc[:, 0] = link_time
-
-        # --- Find latest timestamp ---
-        latest_time = proxy_df.iloc[:, 0].max()
-
-        proxy_row = proxy_df[proxy_df.iloc[:, 0] == latest_time]
-        link_row  = link_df [link_df.iloc[:, 0]  == latest_time]
-
-        if not proxy_row.empty and not link_row.empty:
-            proxy_data = proxy_row.iloc[0, 1:].to_dict()
-            link_data  = link_row.iloc[0, 1:].to_dict()
-            common_ids = set(proxy_data.keys()) & set(link_data.keys())
-
-            # Assign speeds to GeoDataFrame
-            gdf["Cariad_speed"] = gdf.apply(
-                lambda r: link_data.get(r["No-Fromnodeno"], np.nan), axis=1)
-            gdf["Estimated_speed"] = gdf.apply(
-                lambda r: proxy_data.get(r["No-Fromnodeno"], np.nan), axis=1)
-            gdf["Timestamp"] = latest_time
+        # --- Check files exist ---
+        if not os.path.exists(proxy_path):
+            st.error(f"❌ File not found: {proxy_path}")
+        elif not os.path.exists(link_path):
+            st.error(f"❌ File not found: {link_path}")
         else:
-            st.warning("No matching timestamp found in one of the files.")
+            # --- Load CSVs ---
+            proxy_df = pd.read_csv(proxy_path)
+            link_df  = pd.read_csv(link_path)
+
+            # --- Parse time columns ---
+            proxy_df.iloc[:, 0] = pd.to_datetime(proxy_df.iloc[:, 0], errors="coerce")
+
+            # Fix test_link time (subtract 1h, remove timezone)
+            link_time = pd.to_datetime(link_df.iloc[:, 0], errors="coerce", utc=True)
+            link_time_fixed = (link_time - pd.Timedelta(hours=1)).dt.tz_convert(None)
+            link_df.iloc[:, 0] = link_time_fixed
+
+            # --- Get latest timestamp ---
+            latest_time = proxy_df.iloc[:, 0].max()
+            st.write("🕒 Latest timestamp from proxy:", latest_time)
+
+            # --- Debug check timestamps ---
+            st.write("🔹 Proxy timestamps sample:", proxy_df.iloc[:, 0].tail(3).astype(str).tolist())
+            st.write("🔹 Link timestamps sample:", link_df.iloc[:, 0].tail(3).astype(str).tolist())
+
+            # --- Match timestamps ---
+            proxy_row = proxy_df[proxy_df.iloc[:, 0] == latest_time]
+            link_row  = link_df [link_df.iloc[:, 0]  == latest_time]
+
+            if proxy_row.empty:
+                st.error("❌ No matching timestamp found in proxy file after parsing.")
+            elif link_row.empty:
+                st.error("⚠️ No matching timestamp found in link file after time correction.")
+            else:
+                proxy_data = proxy_row.iloc[0, 1:].to_dict()
+                link_data  = link_row.iloc[0, 1:].to_dict()
+                common_ids = set(proxy_data.keys()) & set(link_data.keys())
+
+                # Assign data to map GeoDataFrame
+                gdf["Cariad_speed"] = gdf.apply(
+                    lambda r: link_data.get(r["No-Fromnodeno"], np.nan), axis=1)
+                gdf["Estimated_speed"] = gdf.apply(
+                    lambda r: proxy_data.get(r["No-Fromnodeno"], np.nan), axis=1)
+                gdf["Timestamp"] = latest_time
+
+                st.success(f"✅ Data assigned successfully for {len(common_ids)} matching segments.")
 
     # --- Map setup ---
     map_center = [gdf.geometry.centroid.y.mean(), gdf.geometry.centroid.x.mean()]
@@ -401,6 +421,7 @@ if selected_page == "York":
             <span style="display:inline-block;width:22px;height:18px;background:#00B050;border-radius:4px;margin-right:8px;"></span> 50+
         </div>
         """, unsafe_allow_html=True)
+
 
 
 
