@@ -341,9 +341,9 @@ if selected_page == "York":
             # --- Parse time columns ---
             proxy_df.iloc[:, 0] = pd.to_datetime(proxy_df.iloc[:, 0], errors="coerce")
 
-            # Fix test_link time (subtract 1h, remove timezone)
+            # ✅ FIX: Add 1 hour to link times and drop timezone
             link_time = pd.to_datetime(link_df.iloc[:, 0], errors="coerce", utc=True)
-            link_time_fixed = (link_time - pd.Timedelta(hours=1)).dt.tz_convert(None)
+            link_time_fixed = (link_time + pd.Timedelta(hours=1)).dt.tz_convert(None)
             link_df.iloc[:, 0] = link_time_fixed
 
             # --- Get latest timestamp ---
@@ -421,6 +421,7 @@ if selected_page == "York":
             <span style="display:inline-block;width:22px;height:18px;background:#00B050;border-radius:4px;margin-right:8px;"></span> 50+
         </div>
         """, unsafe_allow_html=True)
+
 
 
 
