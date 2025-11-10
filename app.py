@@ -340,7 +340,17 @@ if selected_page == "York":
 
         # Fix +1 hour offset in link file
         try:
-            link_df.iloc[:, 0] = (link_df.iloc[:, 0] - pd.Timedelta(hours=1)).dt.tz_localize(None)
+            # Parse timestamps correctly and fix +1 hour offset in link file
+            link_times = pd.to_datetime(link_df.iloc[:, 0], errors="coerce")
+            
+            # Remove timezone info if present, then subtract one hour
+            if pd.api.types.is_datetime64_any_dtype(link_times):
+                link_times = link_times.dt.tz_localize(None, ambiguous='NaT', nonexistent='shift_forward')
+            else:
+                link_times = pd.to_datetime(link_times, utc=True).dt.tz_localize(None)
+            
+            link_df.iloc[:, 0] = link_times - pd.Timedelta(hours=1)
+
         except TypeError:
             link_df.iloc[:, 0] = link_df.iloc[:, 0] - pd.Timedelta(hours=1)
 
