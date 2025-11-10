@@ -285,100 +285,51 @@ if selected_page == "Brussels":
 # -------- York --------
 if selected_page == "York":
 
-    import pandas as pd
-    import geopandas as gpd
-    import numpy as np
-    import folium
-    from streamlit_folium import st_folium
-    import streamlit as st
-
-    # ---------- Button & Session State ----------
+    # ---------- Button & Processing ----------
     col1, col2, col3 = st.columns([2, 3, 2])
 
+    # initialize session state
     if "colorized_york" not in st.session_state:
         st.session_state["colorized_york"] = False
     if "york_speeds" not in st.session_state:
         st.session_state["york_speeds"] = None
 
-    # --- Button callback ---
+    # Button with callback
     with col2:
-        if st.button("Run Traffic Estimation (Click Me!)"):
-            st.session_state["colorized_york"] = True
+        st.button("Run Traffic Estimation (Click Me!)")
+        #st.button(
+        #    "Run Traffic Estimation (Click Me!)",
+        #    key="run_york_colorize",
+        #   on_click=lambda: st.session_state.update(colorized_york=True)
+        #)
 
-    # --- Load GeoPackage ---
+    # --- Load GeoPackage layer ---
     gdf = gpd.read_file("York_roads_within_3km.gpkg")
-
-    # --- Detect the ID column automatically ---
-    possible_ids = ["segment_id", "Segment_ID", "id", "ID", "road_id", "roadID", "road_name"]
-    id_col = None
-    for colname in possible_ids:
-        if colname in gdf.columns:
-            id_col = colname
-            break
-    if id_col is None:
-        id_col = gdf.columns[0]  # fallback to first column
-
-    # --- Define color scale ---
+    
+    import numpy as np
     def get_speed_color(pred):
         try:
             pred = float(pred)
         except:
             return "gray"
         if pred < 10:
-            return "#8B0000"
+            return "#8B0000"   # dark red
         elif pred < 20:
-            return "#FF0000"
+            return "#FF0000"   # red
         elif pred < 30:
-            return "#FFA500"
+            return "#FFA500"   # orange
         elif pred < 40:
-            return "#FFFF00"
+            return "#FFFF00"   # yellow
         elif pred < 50:
-            return "#9ACD32"
+            return "#9ACD32"   # light green
         else:
-            return "#00B050"
+            return "#00B050"   # green
 
-    # --- When button is pressed: run traffic estimation ---
-    if st.session_state["colorized_york"]:
-
-        # Read the two CSV files
-        proxy_df = pd.read_csv("test_proxy_estimates_filtered.csv")
-        link_df  = pd.read_csv("test_link_speed_timeseries_15min_wide.csv")
-
-        # Parse timestamps
-        proxy_df.iloc[:, 0] = pd.to_datetime(proxy_df.iloc[:, 0], errors="coerce")
-        link_df.iloc[:, 0]  = pd.to_datetime(link_df.iloc[:, 0], errors="coerce")
-
-        # Fix +1 hour offset safely
-        link_times = pd.to_datetime(link_df.iloc[:, 0], errors="coerce")
-        if pd.api.types.is_datetime64_any_dtype(link_times):
-            try:
-                link_times = link_times.dt.tz_localize(None)
-            except Exception:
-                link_times = link_times
-        link_df.iloc[:, 0] = link_times - pd.Timedelta(hours=1)
-
-        # Find latest time in proxy
-        latest_time = proxy_df.iloc[:, 0].max()
-
-        # Extract matching rows
-        proxy_row = proxy_df[proxy_df.iloc[:, 0] == latest_time]
-        link_row  = link_df [link_df.iloc[:, 0]  == latest_time]
-
-        if proxy_row.empty or link_row.empty:
-            st.error("⚠️ Matching timestamp not found after time correction.")
-        else:
-            proxy_data = proxy_row.iloc[0, 1:].to_dict()
-            link_data  = link_row.iloc[0, 1:].to_dict()
-            common_ids = sorted(set(proxy_data.keys()) & set(link_data.keys()))
-
-            # Assign estimated speeds to segments
-            speed_map = {sid: proxy_data[sid] for sid in common_ids}
-            gdf["estimated_speed"] = gdf[id_col].map(speed_map)
-
-            # Save to session
-            st.session_state["york_speeds"] = gdf["estimated_speed"].to_dict()
-
-            st.success(f"✅ Traffic estimation completed for {len(common_ids)} segments at {latest_time}.")
+    # create random "speed" values once when button pressed
+    if st.session_state["colorized_york"] and st.session_state["york_speeds"] is None:
+        st.session_state["york_speeds"] = {
+            i: float(10 + 20 * np.random.rand()) for i in range(len(gdf))
+        }
 
     # --- Map setup ---
     map_center = [gdf.geometry.centroid.y.mean(), gdf.geometry.centroid.x.mean()]
@@ -387,19 +338,19 @@ if selected_page == "York":
     # --- Draw each segment ---
     for idx, row in gdf.iterrows():
         if st.session_state["colorized_york"] and st.session_state["york_speeds"] is not None:
-            speed = st.session_state["york_speeds"].get(idx, None)
+            speed = st.session_state["york_speeds"][idx]
             color = get_speed_color(speed)
         else:
-            color = "black"
+            color = "black"  # default color before pressing the button
 
-        tooltip = f"<b>ID:</b> {row.get(id_col, idx)}<br><b>Estimated speed:</b> {row.get('estimated_speed', 'N/A')}"
+        tooltip = "<br>".join([f"<b>{col}:</b> {row[col]}" for col in list(gdf.columns)[:3]])
         folium.GeoJson(
             row.geometry.__geo_interface__,
             tooltip=tooltip,
             style_function=lambda x, color=color: {"color": color, "weight": 2.5}
         ).add_to(m)
 
-    # --- Display map and legend ---
+    # --- Map and color legend side-by-side ---
     col1, col2 = st.columns([4, 1])
     with col1:
         st_folium(m, width=700, height=500)
@@ -420,3 +371,4 @@ if selected_page == "York":
             <span style="display:inline-block;width:22px;height:18px;background:#00B050;border-radius:4px;margin-right:8px;"></span> 50+
         </div>
         """, unsafe_allow_html=True)
+
