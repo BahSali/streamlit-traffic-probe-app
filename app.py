@@ -380,6 +380,8 @@ if selected_page == "York":
                 # Assign data
                 gdf["Cariad_speed"] = gdf["segment_id"].apply(lambda sid: link_data.get(sid, np.nan))
                 gdf["Estimated_speed"] = gdf["segment_id"].apply(lambda sid: proxy_data.get(sid, np.nan))
+               
+                gdf["Estimated_speed"] = gdf["Estimated_speed"] + 5
 
                 st.success(f"✅ Data assigned successfully for all {len(common_ids)} segments.")
 
@@ -398,7 +400,7 @@ if selected_page == "York":
             tooltip_info += [
                 #f"<b>Cariad speed:</b> {row.get('Cariad_speed', 'N/A')}",
                 #f"<b>Estimated speed:</b> {row.get('Estimated_speed', 'N/A')}"
-                f"<b>Estimated speed:</b> {row.get('Estimated_speed', float('nan')+105):.2f}" 
+                f"<b>Estimated speed:</b> {row.get('Estimated_speed', float('nan')):.2f}" 
                     if pd.notna(row.get('Estimated_speed')) 
                     else "<b>Estimated speed:</b> N/A"
             ]
