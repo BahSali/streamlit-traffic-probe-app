@@ -347,13 +347,15 @@ if selected_page == "York":
             latest_time = proxy_df.iloc[:, 0].max()
             #st.write("🕒 Latest timestamp in dataset:", latest_time)
 
-            with st.spinner('⏳ Fetching Live Bus Speed (please wait)...'):
+            # dump
+            with st.spinner('⏳ Fetching Bus Speed (please wait)...'):
                 generate_dataset()
             st.success('✅ Retrieve Live Bus Speeds!')
     
             with st.spinner('🤖 Running Estimator tool...'):
                 run_model()
             st.success('✅ Estimation finished!')
+            # dump
 
             # --- Match timestamps ---
             proxy_row = proxy_df[proxy_df.iloc[:, 0] == latest_time]
@@ -390,7 +392,7 @@ if selected_page == "York":
 
         if st.session_state["colorized_york"]:
             tooltip_info += [
-                f"<b>Cariad speed:</b> {row.get('Cariad_speed', 'N/A')}",
+                #f"<b>Cariad speed:</b> {row.get('Cariad_speed', 'N/A')}",
                 f"<b>Estimated speed:</b> {row.get('Estimated_speed', 'N/A')}"
             ]
 
