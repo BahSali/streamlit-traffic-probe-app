@@ -397,7 +397,12 @@ if selected_page == "York":
         if st.session_state["colorized_york"]:
             tooltip_info += [
                 #f"<b>Cariad speed:</b> {row.get('Cariad_speed', 'N/A')}",
-                f"<b>Estimated speed:</b> {row.get('Estimated_speed', 'N/A')}"
+                #f"<b>Estimated speed:</b> {row.get('Estimated_speed', 'N/A')}"
+                tooltip_info += [
+                    f"<b>Estimated speed:</b> {row.get('Estimated_speed', float('nan')):.2f}" 
+                    if pd.notna(row.get('Estimated_speed')) 
+                    else "<b>Estimated speed:</b> N/A"
+                ]
             ]
 
         folium.GeoJson(
