@@ -281,8 +281,6 @@ if selected_page == "Brussels":
         </div>
         """, unsafe_allow_html=True)
 
-
-
 # -------- York --------
 if selected_page == "York":
 
@@ -302,12 +300,12 @@ if selected_page == "York":
     if "york_speeds" not in st.session_state:
         st.session_state["york_speeds"] = None
     if "york_done" not in st.session_state:
-        st.session_state["york_done"] = False  # ✅ added flag
+        st.session_state["york_done"] = False
 
     with col2:
         if st.button("Run Traffic Estimation (Click Me!)"):
             st.session_state["colorized_york"] = True
-            st.session_state["york_done"] = False  # ✅ reset flag when rerunning
+            st.session_state["york_done"] = False
 
     # --- Load GeoPackage layer ---
     gdf = gpd.read_file("York_roads_within_3km.gpkg")
@@ -326,7 +324,7 @@ if selected_page == "York":
         else: return "#00B050"
 
     # --- When button pressed ---
-    if st.session_state["colorized_york"] and not st.session_state["york_done"]:  # ✅ prevents double run
+    if st.session_state["colorized_york"]:
 
         proxy_path = "test_proxy_estimates_filtered.csv"
         link_path  = "test_link_speed_timeseries_15min_wide.csv"
@@ -352,13 +350,15 @@ if selected_page == "York":
             #st.write("🕒 Latest timestamp in dataset:", latest_time)
 
             # dump
-            with st.spinner('⏳ Fetching Bus Speed (please wait)...'):
-                generate_dataset()
-            st.success('✅ Retrieve Live Bus Speeds!')
-    
-            with st.spinner('🤖 Running Estimator tool...'):
-                run_model()
-            st.success('✅ Estimation finished!')
+            if not st.session_state["york_done"]:
+                with st.spinner('⏳ Fetching Bus Speed (please wait)...'):
+                    generate_dataset()
+                st.success('✅ Retrieve Live Bus Speeds!')
+        
+                with st.spinner('🤖 Running Estimator tool...'):
+                    run_model()
+                st.success('✅ Estimation finished!')
+                st.session_state["york_done"] = True
             # dump
 
             # --- Match timestamps ---
@@ -382,8 +382,6 @@ if selected_page == "York":
                 gdf["Estimated_speed"] = gdf["segment_id"].apply(lambda sid: proxy_data.get(sid, np.nan))
 
                 st.success(f"✅ Data assigned successfully for all {len(common_ids)} segments.")
-
-            st.session_state["york_done"] = True  # ✅ mark as done to skip on re-run
 
     # --- Map setup ---
     map_center = [gdf.geometry.centroid.y.mean(), gdf.geometry.centroid.x.mean()]
@@ -429,4 +427,5 @@ if selected_page == "York":
             <span style="display:inline-block;width:22px;height:18px;background:#00B050;border-radius:4px;margin-right:8px;"></span> 50+
         </div>
         """, unsafe_allow_html=True)
+
 
