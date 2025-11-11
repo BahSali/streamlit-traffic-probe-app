@@ -345,7 +345,15 @@ if selected_page == "York":
 
             # --- Get latest timestamp ---
             latest_time = proxy_df.iloc[:, 0].max()
-            st.write("🕒 Latest timestamp in dataset:", latest_time)
+            #st.write("🕒 Latest timestamp in dataset:", latest_time)
+
+            with st.spinner('⏳ Fetching Live Bus Speed (please wait)...'):
+                generate_dataset()
+            st.success('✅ Retrieve Live Bus Speeds!')
+    
+            with st.spinner('🤖 Running Estimator tool...'):
+                run_model()
+            st.success('✅ Estimation finished!')
 
             # --- Match timestamps ---
             proxy_row = proxy_df[proxy_df.iloc[:, 0] == latest_time]
