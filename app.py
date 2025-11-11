@@ -282,6 +282,7 @@ if selected_page == "Brussels":
         """, unsafe_allow_html=True)
 
 
+
 # -------- York --------
 if selected_page == "York":
 
@@ -300,10 +301,13 @@ if selected_page == "York":
         st.session_state["colorized_york"] = False
     if "york_speeds" not in st.session_state:
         st.session_state["york_speeds"] = None
+    if "york_done" not in st.session_state:
+        st.session_state["york_done"] = False  # ✅ added flag
 
     with col2:
         if st.button("Run Traffic Estimation (Click Me!)"):
             st.session_state["colorized_york"] = True
+            st.session_state["york_done"] = False  # ✅ reset flag when rerunning
 
     # --- Load GeoPackage layer ---
     gdf = gpd.read_file("York_roads_within_3km.gpkg")
@@ -322,7 +326,7 @@ if selected_page == "York":
         else: return "#00B050"
 
     # --- When button pressed ---
-    if st.session_state["colorized_york"]:
+    if st.session_state["colorized_york"] and not st.session_state["york_done"]:  # ✅ prevents double run
 
         proxy_path = "test_proxy_estimates_filtered.csv"
         link_path  = "test_link_speed_timeseries_15min_wide.csv"
@@ -379,6 +383,8 @@ if selected_page == "York":
 
                 st.success(f"✅ Data assigned successfully for all {len(common_ids)} segments.")
 
+            st.session_state["york_done"] = True  # ✅ mark as done to skip on re-run
+
     # --- Map setup ---
     map_center = [gdf.geometry.centroid.y.mean(), gdf.geometry.centroid.x.mean()]
     m = folium.Map(location=map_center, zoom_start=13)
@@ -423,3 +429,4 @@ if selected_page == "York":
             <span style="display:inline-block;width:22px;height:18px;background:#00B050;border-radius:4px;margin-right:8px;"></span> 50+
         </div>
         """, unsafe_allow_html=True)
+
