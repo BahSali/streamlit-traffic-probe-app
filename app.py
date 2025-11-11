@@ -382,6 +382,7 @@ if selected_page == "York":
                 gdf["Estimated_speed"] = gdf["segment_id"].apply(lambda sid: proxy_data.get(sid, np.nan))
                
                 if "rand_boost" not in st.session_state:
+                    np.random.seed(42)
                     st.session_state["rand_boost"] = np.random.uniform(0, 10, len(gdf))
                 
                 gdf["Estimated_speed"] = gdf["Estimated_speed"] + st.session_state["rand_boost"]
