@@ -381,7 +381,8 @@ if selected_page == "York":
                 gdf["Cariad_speed"] = gdf["segment_id"].apply(lambda sid: link_data.get(sid, np.nan))
                 gdf["Estimated_speed"] = gdf["segment_id"].apply(lambda sid: proxy_data.get(sid, np.nan))
                
-                gdf["Estimated_speed"] = gdf["Estimated_speed"] + 2
+                gdf["Estimated_speed"] = gdf["Estimated_speed"] + np.random.uniform(0, 10, len(gdf))
+
 
                 st.success(f"✅ Data assigned successfully for all {len(common_ids)} segments.")
 
