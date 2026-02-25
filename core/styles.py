@@ -1,56 +1,64 @@
 import streamlit as st
 
 def inject_styles():
-    dark_style = """
+    light_style = """
     <style>
+
     /* Main background */
     .stApp {
-        background-color: #0F172A;
-        color: #E5E7EB;
+        background-color: #F4F6F9;
+        color: #1F2937;
+    }
+
+    /* Remove top padding gap */
+    .block-container {
+        padding-top: 2rem;
     }
 
     /* Sidebar */
     section[data-testid="stSidebar"] {
-        background-color: #111827;
+        background-color: #E9EEF3;
     }
 
     /* Headers */
     h1, h2, h3, h4 {
-        color: #E5E7EB !important;
+        color: #1F2937 !important;
+        font-weight: 600;
     }
 
     /* Buttons */
     div.stButton > button:first-child {
-        background-color: #009688;
+        background-color: #00796B;
         color: white;
         font-weight: 600;
         border-radius: 8px;
         padding: 0.6em 1.4em;
         border: none;
-        transition: all 0.2s ease-in-out;
+        transition: all 0.15s ease-in-out;
     }
 
     div.stButton > button:first-child:hover {
-        background-color: #00796B;
+        background-color: #005F56;
         transform: translateY(-1px);
     }
 
     /* Checkbox */
     .stCheckbox label {
-        color: #E5E7EB;
+        color: #1F2937;
     }
 
     /* Expander */
     .streamlit-expanderHeader {
-        color: #E5E7EB;
         font-weight: 500;
+        color: #1F2937;
     }
 
     /* Dataframe */
     .stDataFrame {
-        background-color: #1E293B;
-        border-radius: 6px;
+        background-color: white;
+        border-radius: 8px;
     }
+
     </style>
     """
-    st.markdown(dark_style, unsafe_allow_html=True)
+    st.markdown(light_style, unsafe_allow_html=True)
