@@ -5,9 +5,9 @@ st.set_page_config(page_title="Average Speed Estimator", layout="wide")
 inject_styles()
 
 PAGES = {
-    "Ixelles-Etterbeek": "pages/1_Ixelles_Etterbeek.py",
-    "Brussels": "pages/2_Brussels.py",
-    "York": "pages/3_York.py",
+    "Ixelles-Etterbeek": "pages/Ixelles_Etterbeek.py",
+    "Brussels": "pages/Brussels.py",
+    #"York": "pages/York.py",
 }
 
 st.sidebar.markdown("### Map selector")
