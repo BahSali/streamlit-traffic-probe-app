@@ -11,17 +11,23 @@ PAGES = {
 }
 
 st.sidebar.markdown("### Map selector")
+
+options = ["-- Select a map --"] + list(PAGES.keys())
 selection = st.sidebar.selectbox(
     "Choose an area",
-    list(PAGES.keys()),
+    options,
+    index=0,
     key="page_selector",
 )
 
-target = PAGES[selection]
-
-st.markdown("<h1 style='text-align:center; color:#009688;'>Urban Area Average Speed Estimator</h1>", unsafe_allow_html=True)
+st.markdown(
+    "<h1 style='text-align:center; color:#009688;'>Urban Area Average Speed Estimator</h1>",
+    unsafe_allow_html=True
+)
 st.caption("Use the dropdown in the sidebar to select a map.")
 
-if st.session_state.get("_last_page") != target:
-    st.session_state["_last_page"] = target
-    st.switch_page(target)
+if selection != "-- Select a map --":
+    target = PAGES[selection]
+    if st.session_state.get("_last_page") != target:
+        st.session_state["_last_page"] = target
+        st.switch_page(target)
