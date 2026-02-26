@@ -8,28 +8,29 @@ from core.colors import get_speed_color, legend_html
 from core.data_sources import fetch_stib_shapefile
 from core.map_render import center_from_bounds
 
+
 st.set_page_config(page_title="Brussels", layout="wide")
 inject_styles()
 
-# ---------------- SIDEBAR SETTINGS (ADD HERE) ----------------
+# ---------------- SIDEBAR SETTINGS ----------------
 with st.sidebar:
     st.markdown("### Brussels settings")
 
-    show_speed = st.checkbox(
+    st.checkbox(
         "Show speed in tooltip",
         value=True,
-        key="bru_show_speed"
+        key="bru_show_speed",
     )
 
-    line_weight = st.slider(
+    st.slider(
         "Line weight",
         min_value=1.0,
         max_value=6.0,
         value=2.5,
         step=0.5,
-        key="bru_weight"
+        key="bru_weight",
     )
-# -------------------------------------------------------------
+# --------------------------------------------------
 
 st.markdown("<h2 style='color:#009688;'>Brussels</h2>", unsafe_allow_html=True)
 st.caption("STIB network visualisation. Tooltip changes before/after colorisation.")
@@ -44,7 +45,7 @@ token = st.secrets["STIB_TOKEN"]
 if "brussels_colorized" not in st.session_state:
     st.session_state["brussels_colorized"] = False
 
-# --- UI controls ---
+# --- UI controls (main area buttons) ---
 col_a, col_b, col_c = st.columns([2, 3, 2])
 with col_b:
     if st.button("Colorize network (demo)", use_container_width=True):
@@ -57,13 +58,11 @@ with col_b:
 def build_geojson_with_style(token_value: str, colorized: bool) -> str:
     gdf = fetch_stib_shapefile(token_value)
 
-    # Ensure required tooltip fields exist
     for col in ["ligne", "variante"]:
         if col not in gdf.columns:
             gdf[col] = "N/A"
 
     if colorized:
-        # Deterministic demo speeds: stable across reruns
         speeds = {i: float(3 + (i * 7) % 55) for i in range(len(gdf))}
         gdf["__speed"] = [speeds[i] for i in range(len(gdf))]
         gdf["__speed_str"] = gdf["__speed"].map(lambda v: f"{v:.1f}")
@@ -78,13 +77,22 @@ def build_geojson_with_style(token_value: str, colorized: bool) -> str:
 with st.spinner("Loading STIB network geometry..."):
     geojson_str = build_geojson_with_style(token, st.session_state["brussels_colorized"])
 
-# Map center (fast bounds-based)
+# Map center (bounds-based)
 gdf_center_source = fetch_stib_shapefile(token)
 center = center_from_bounds(gdf_center_source)
 
-# Tooltip fields depend on colorized mode
-tooltip_fields = ["ligne", "variante"] + (["__speed_str"] if st.session_state["brussels_colorized"] else [])
-tooltip_aliases = ["Line:", "Variant:"] + (["Speed:"] if st.session_state["brussels_colorized"] else [])
+# Tooltip logic uses the sidebar checkbox + the colorized state
+show_speed = st.session_state.get("bru_show_speed", True)
+is_colorized = st.session_state["brussels_colorized"]
+
+if show_speed and is_colorized:
+    tooltip_fields = ["ligne", "variante", "__speed_str"]
+    tooltip_aliases = ["Line:", "Variant:", "Speed:"]
+else:
+    tooltip_fields = ["ligne", "variante"]
+    tooltip_aliases = ["Line:", "Variant:"]
+
+line_weight = st.session_state.get("bru_weight", 2.5)
 
 m = folium.Map(location=center, zoom_start=11, control_scale=True)
 
@@ -92,7 +100,7 @@ folium.GeoJson(
     data=geojson_str,
     style_function=lambda feature: {
         "color": feature["properties"].get("__color", "black"),
-        "weight": 2.5,
+        "weight": line_weight,
     },
     tooltip=GeoJsonTooltip(
         fields=tooltip_fields,
