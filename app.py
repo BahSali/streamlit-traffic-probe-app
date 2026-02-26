@@ -1,7 +1,7 @@
 import streamlit as st
 from core.styles import inject_styles
 
-st.set_page_config(page_title="Average Speed Estimator", layout="wide")
+st.set_page_config(page_title="Average Speed Estimator", layout="wide", initial_sidebar_state="expanded",)
 inject_styles()
 
 PAGES = {
