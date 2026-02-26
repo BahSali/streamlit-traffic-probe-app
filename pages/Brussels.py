@@ -7,10 +7,11 @@ from core.styles import inject_styles
 from core.colors import get_speed_color, legend_html
 from core.data_sources import fetch_stib_shapefile
 from core.map_render import center_from_bounds
-
+from core.menu import sidebar_dropdown
 
 st.set_page_config(page_title="Brussels", layout="wide")
 inject_styles()
+sidebar_dropdown("Brussels")
 
 st.markdown("<h2 style='color:#009688;'>Brussels</h2>", unsafe_allow_html=True)
 st.caption("STIB network visualisation. Tooltip changes before/after colorisation.")
