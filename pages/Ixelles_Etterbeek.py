@@ -15,6 +15,12 @@ st.set_page_config(page_title="Ixelles-Etterbeek", layout="wide")
 inject_styles()
 sidebar_dropdown("Ixelles-Etterbeek")
 
+# --- Ixelles settings ---
+st.sidebar.markdown("### Ixelles settings")
+force_refresh = st.sidebar.checkbox("Force refresh model", value=False)
+show_raw = st.sidebar.checkbox("Show raw table", value=False)
+
+# ------
 st.markdown(
     "<h2 style='color:#009688;'>Ixelles-Etterbeek</h2>",
     unsafe_allow_html=True
