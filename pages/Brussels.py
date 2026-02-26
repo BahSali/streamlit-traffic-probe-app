@@ -8,11 +8,29 @@ from core.colors import get_speed_color, legend_html
 from core.data_sources import fetch_stib_shapefile
 from core.map_render import center_from_bounds
 
-
 st.set_page_config(page_title="Brussels", layout="wide")
 inject_styles()
 
-# ------
+# ---------------- SIDEBAR SETTINGS (ADD HERE) ----------------
+with st.sidebar:
+    st.markdown("### Brussels settings")
+
+    show_speed = st.checkbox(
+        "Show speed in tooltip",
+        value=True,
+        key="bru_show_speed"
+    )
+
+    line_weight = st.slider(
+        "Line weight",
+        min_value=1.0,
+        max_value=6.0,
+        value=2.5,
+        step=0.5,
+        key="bru_weight"
+    )
+# -------------------------------------------------------------
+
 st.markdown("<h2 style='color:#009688;'>Brussels</h2>", unsafe_allow_html=True)
 st.caption("STIB network visualisation. Tooltip changes before/after colorisation.")
 
