@@ -9,10 +9,11 @@ from core.styles import inject_styles
 from core.colors import get_speed_color, legend_html
 from core.data_sources import load_csv
 from core.pipelines import run_estimation_pipeline, load_results_dict
-
+from core.menu import sidebar_dropdown
 
 st.set_page_config(page_title="Ixelles-Etterbeek", layout="wide")
 inject_styles()
+sidebar_dropdown("Ixelles-Etterbeek")
 
 st.markdown(
     "<h2 style='color:#009688;'>Ixelles-Etterbeek</h2>",
