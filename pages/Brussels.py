@@ -13,17 +13,19 @@ st.set_page_config(page_title="Brussels", layout="wide")
 inject_styles()
 
 st.markdown("<h2 style='color:#009688;'>Brussels</h2>", unsafe_allow_html=True)
-st.caption("STIB network visualisation. (Optional) demo colorisation by synthetic speeds.")
+st.caption("STIB network visualisation. Tooltip changes before/after colorisation.")
 
+# --- Secrets ---
 if "STIB_TOKEN" not in st.secrets:
     st.error("Missing STIB_TOKEN in st.secrets. Add it to .streamlit/secrets.toml or Streamlit Cloud Secrets.")
     st.stop()
-
 token = st.secrets["STIB_TOKEN"]
 
+# --- Session state ---
 if "brussels_colorized" not in st.session_state:
     st.session_state["brussels_colorized"] = False
 
+# --- UI controls ---
 col_a, col_b, col_c = st.columns([2, 3, 2])
 with col_b:
     if st.button("Colorize network (demo)", use_container_width=True):
@@ -32,37 +34,38 @@ with col_b:
         st.session_state["brussels_colorized"] = False
 
 
-@st.cache_data(show_spinner=False)
-def build_geojson_with_style(token_value: str, colorized: bool) -> tuple[str, list[str]]:
+@st.cache_data(show_spinner=False, ttl=3600)
+def build_geojson_with_style(token_value: str, colorized: bool) -> str:
     gdf = fetch_stib_shapefile(token_value)
 
-    # Keep tooltip fields lean
+    # Ensure required tooltip fields exist
     for col in ["ligne", "variante"]:
         if col not in gdf.columns:
             gdf[col] = "N/A"
 
     if colorized:
-        # Deterministic pseudo-values for stable UI (no random rerun noise)
+        # Deterministic demo speeds: stable across reruns
         speeds = {i: float(3 + (i * 7) % 55) for i in range(len(gdf))}
         gdf["__speed"] = [speeds[i] for i in range(len(gdf))]
+        gdf["__speed_str"] = gdf["__speed"].map(lambda v: f"{v:.1f}")
         gdf["__color"] = gdf["__speed"].apply(get_speed_color)
     else:
+        gdf["__speed_str"] = ""
         gdf["__color"] = "black"
 
-    # Convert once to GeoJSON string
-    geojson_str = gdf.to_json()
-
-    # Return also the bounds-based center inputs (computed outside this cache)
-    return geojson_str, ["ligne", "variante"]
+    return gdf.to_json()
 
 
 with st.spinner("Loading STIB network geometry..."):
-    geojson_str, tooltip_fields = build_geojson_with_style(token, st.session_state["brussels_colorized"])
+    geojson_str = build_geojson_with_style(token, st.session_state["brussels_colorized"])
 
-# Compute center from bounds using a light-weight fetch (cached inside fetch_stib_shapefile)
-# This avoids parsing geojson_str just to find bounds.
+# Map center (fast bounds-based)
 gdf_center_source = fetch_stib_shapefile(token)
 center = center_from_bounds(gdf_center_source)
+
+# Tooltip fields depend on colorized mode
+tooltip_fields = ["ligne", "variante"] + (["__speed_str"] if st.session_state["brussels_colorized"] else [])
+tooltip_aliases = ["Line:", "Variant:"] + (["Speed:"] if st.session_state["brussels_colorized"] else [])
 
 m = folium.Map(location=center, zoom_start=11, control_scale=True)
 
@@ -74,7 +77,7 @@ folium.GeoJson(
     },
     tooltip=GeoJsonTooltip(
         fields=tooltip_fields,
-        aliases=["Line:", "Variant:"],
+        aliases=tooltip_aliases,
         sticky=True,
     ),
     name="STIB",
@@ -82,8 +85,6 @@ folium.GeoJson(
 
 col_map, col_legend = st.columns([4, 1], vertical_alignment="top")
 with col_map:
-    # Key is critical to prevent component remount loops
-    # returned_objects=[] prevents frequent reruns due to component state updates
     st_folium(
         m,
         width=850,
@@ -91,6 +92,5 @@ with col_map:
         key="brussels_map",
         returned_objects=[],
     )
-
 with col_legend:
     st.markdown(legend_html(), unsafe_allow_html=True)
