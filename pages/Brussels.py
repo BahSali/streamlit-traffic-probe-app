@@ -13,6 +13,12 @@ st.set_page_config(page_title="Brussels", layout="wide")
 inject_styles()
 sidebar_dropdown("Brussels")
 
+# --- Brussels-specific sidebar settings ---
+st.sidebar.markdown("### Brussels settings")
+show_labels = st.sidebar.checkbox("Show labels", value=True)
+demo_mode = st.sidebar.toggle("Demo color mode", value=True)
+
+# ------
 st.markdown("<h2 style='color:#009688;'>Brussels</h2>", unsafe_allow_html=True)
 st.caption("STIB network visualisation. Tooltip changes before/after colorisation.")
 
