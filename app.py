@@ -4,5 +4,24 @@ from core.styles import inject_styles
 st.set_page_config(page_title="Average Speed Estimator", layout="wide")
 inject_styles()
 
+PAGES = {
+    "Ixelles-Etterbeek": "pages/1_Ixelles_Etterbeek.py",
+    "Brussels": "pages/2_Brussels.py",
+    "York": "pages/3_York.py",
+}
+
+st.sidebar.markdown("### Map selector")
+selection = st.sidebar.selectbox(
+    "Choose an area",
+    list(PAGES.keys()),
+    key="page_selector",
+)
+
+target = PAGES[selection]
+
 st.markdown("<h1 style='text-align:center; color:#009688;'>Urban Area Average Speed Estimator</h1>", unsafe_allow_html=True)
-st.caption("Multipage app: select a city from the sidebar.")
+st.caption("Use the dropdown in the sidebar to select a map.")
+
+if st.session_state.get("_last_page") != target:
+    st.session_state["_last_page"] = target
+    st.switch_page(target)
