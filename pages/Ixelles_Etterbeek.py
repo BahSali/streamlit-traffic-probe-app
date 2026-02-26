@@ -1,4 +1,3 @@
-
 import os
 import streamlit as st
 import pandas as pd
@@ -9,17 +8,40 @@ from core.styles import inject_styles
 from core.colors import get_speed_color, legend_html
 from core.data_sources import load_csv
 from core.pipelines import run_estimation_pipeline, load_results_dict
+from core.nav_panel import render_left_panel
+
 
 st.set_page_config(page_title="Ixelles-Etterbeek", layout="wide")
 inject_styles()
 
+settings_box, content_box = render_left_panel("Ixelles-Etterbeek")
 
-# ------
-st.markdown(
-    "<h2 style='color:#009688;'>Ixelles-Etterbeek</h2>",
-    unsafe_allow_html=True
-)
-st.caption("Interactive visualisation of real-time probe-derived bus speeds alongside estimation across road segments.")
+# ---------------- LEFT PANEL SETTINGS ----------------
+with settings_box:
+    st.markdown("### Ixelles settings")
+
+    st.checkbox(
+        "Show raw segment data",
+        value=False,
+        key="ix_show_raw",
+    )
+
+    st.checkbox(
+        "Force refresh (ignore cached results)",
+        value=False,
+        key="ix_force_refresh",
+    )
+
+    st.slider(
+        "Line weight",
+        min_value=1.0,
+        max_value=8.0,
+        value=4.0,
+        step=0.5,
+        key="ix_weight",
+    )
+# ----------------------------------------------------
+
 
 DATA_PATH = "data/Brux_net.csv"
 RESULTS_PATH = "results.csv"
@@ -46,6 +68,7 @@ def build_map(
     end_lon_col: str,
     center: list[float],
     results_dict: dict,
+    line_weight: float,
 ) -> folium.Map:
     m = folium.Map(location=center, zoom_start=13, control_scale=True)
 
@@ -63,7 +86,6 @@ def build_map(
             r = results_dict[segment_id]
             speed = r.get("Speed", None)
             prediction = r.get("Prediction", None)
-
             try:
                 speed_f = float(speed)
                 pred_f = float(prediction)
@@ -81,61 +103,71 @@ def build_map(
                 [row[end_lat_col], row[end_lon_col]],
             ],
             color=color,
-            weight=4,
+            weight=line_weight,
             tooltip="<br>".join(tooltip_lines),
         ).add_to(m)
 
     return m
 
 
-# --- Load data ---
-if not os.path.exists(DATA_PATH):
-    st.error(f"Data file not found: {DATA_PATH}")
-    st.stop()
+# ---------------- MAIN CONTENT ----------------
+with content_box:
+    st.markdown("<h2 style='color:#009688;'>Ixelles-Etterbeek</h2>", unsafe_allow_html=True)
+    st.caption(
+        "Interactive visualisation of real-time probe-derived bus speeds alongside estimation across road segments."
+    )
 
-df_raw = load_csv(DATA_PATH, sep=CSV_SEP)
-df, s_lat, s_lon, e_lat, e_lon, center = prepare_segments(df_raw)
+    if not os.path.exists(DATA_PATH):
+        st.error(f"Data file not found: {DATA_PATH}")
+        st.stop()
 
-with st.expander("Show raw segment data"):
-    st.dataframe(df)
+    df_raw = load_csv(DATA_PATH, sep=CSV_SEP)
+    df, s_lat, s_lon, e_lat, e_lon, center = prepare_segments(df_raw)
 
-# --- Session state ---
-if "ixelles_results_dict" not in st.session_state:
-    st.session_state["ixelles_results_dict"] = {}
+    if st.session_state.get("ix_show_raw", False):
+        with st.expander("Show raw segment data", expanded=False):
+            st.dataframe(df)
 
-if "ixelles_last_run_error" not in st.session_state:
-    st.session_state["ixelles_last_run_error"] = None
+    if "ixelles_results_dict" not in st.session_state:
+        st.session_state["ixelles_results_dict"] = {}
+    if "ixelles_last_run_error" not in st.session_state:
+        st.session_state["ixelles_last_run_error"] = None
 
-# --- Actions ---
-col_a, col_b, col_c = st.columns([2, 3, 2])
-with col_b:
-    run_clicked = st.button("Run Traffic Estimation", use_container_width=True)
-    force_refresh = st.checkbox("Force refresh (ignore cached results)", value=False)
+    col_a, col_b, col_c = st.columns([2, 3, 2])
+    with col_b:
+        run_clicked = st.button("Run Traffic Estimation", use_container_width=True)
 
-if run_clicked:
-    st.session_state["ixelles_last_run_error"] = None
-    try:
-        with st.spinner("Fetching live bus speeds and running estimator..."):
-            run_estimation_pipeline(results_path=RESULTS_PATH, sep=CSV_SEP, force=force_refresh)
+    if run_clicked:
+        st.session_state["ixelles_last_run_error"] = None
+        try:
+            with st.spinner("Fetching live bus speeds and running estimator..."):
+                run_estimation_pipeline(
+                    results_path=RESULTS_PATH,
+                    sep=CSV_SEP,
+                    force=st.session_state.get("ix_force_refresh", False),
+                )
 
-        with st.spinner("Loading results..."):
-            st.session_state["ixelles_results_dict"] = load_results_dict(results_path=RESULTS_PATH, sep=CSV_SEP)
+            with st.spinner("Loading results..."):
+                st.session_state["ixelles_results_dict"] = load_results_dict(
+                    results_path=RESULTS_PATH, sep=CSV_SEP
+                )
 
-        st.success("Done. Results loaded.")
-    except Exception as ex:
-        st.session_state["ixelles_last_run_error"] = str(ex)
-        st.error(f"Pipeline failed: {ex}")
+            st.success("Done. Results loaded.")
+        except Exception as ex:
+            st.session_state["ixelles_last_run_error"] = str(ex)
+            st.error(f"Pipeline failed: {ex}")
 
-if st.session_state["ixelles_last_run_error"]:
-    st.warning("Last run failed. You can retry or use Force refresh.")
+    if st.session_state["ixelles_last_run_error"]:
+        st.warning("Last run failed. You can retry or use Force refresh.")
 
-results_dict = st.session_state["ixelles_results_dict"]
+    results_dict = st.session_state["ixelles_results_dict"]
+    line_weight = st.session_state.get("ix_weight", 4.0)
 
-# --- Render map ---
-m = build_map(df, s_lat, s_lon, e_lat, e_lon, center, results_dict)
+    m = build_map(df, s_lat, s_lon, e_lat, e_lon, center, results_dict, line_weight)
 
-col_map, col_legend = st.columns([4, 1], vertical_alignment="top")
-with col_map:
-    st_folium(m, width=850, height=550)
-with col_legend:
-    st.markdown(legend_html(), unsafe_allow_html=True)
+    col_map, col_legend = st.columns([4, 1], vertical_alignment="top")
+    with col_map:
+        st_folium(m, width=850, height=550, key="ixelles_map", returned_objects=[])
+    with col_legend:
+        st.markdown(legend_html(), unsafe_allow_html=True)
+# ----------------------------------------------
