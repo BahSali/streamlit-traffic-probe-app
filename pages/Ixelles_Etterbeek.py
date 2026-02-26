@@ -13,25 +13,7 @@ from core.pipelines import run_estimation_pipeline, load_results_dict
 st.set_page_config(page_title="Ixelles-Etterbeek", layout="wide")
 inject_styles()
 
-# --- Sidebar controls for Ixelles ---
-with st.sidebar:
-    st.markdown("### Ixelles settings")
 
-    show_estimation = st.checkbox(
-        "Show estimation values",
-        value=True,
-        key="ix_show_est"
-    )
-
-    line_weight = st.slider(
-        "Line weight",
-        1.0,
-        6.0,
-        4.0,
-        0.5,
-        key="ix_weight"
-    )
-    
 # ------
 st.markdown(
     "<h2 style='color:#009688;'>Ixelles-Etterbeek</h2>",
