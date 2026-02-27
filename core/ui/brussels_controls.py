@@ -2,8 +2,7 @@ import streamlit as st
 
 MODE_OPTIONS = [
     "Segment",
-    "Line",
-    "Area",
+    "Street",
 ]
 
 def brussels_left_controls(settings_box) -> dict:
@@ -15,7 +14,7 @@ def brussels_left_controls(settings_box) -> dict:
         st.markdown("### Brussels controls")
 
         mode = st.selectbox(
-            "Mode",
+            "Presentation Mode",
             MODE_OPTIONS,
             index=0,
             key="bru_mode",
