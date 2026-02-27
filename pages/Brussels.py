@@ -55,7 +55,7 @@ def build_geojson_with_style(token_value: str, colorized: bool) -> str:
 
 with content_box:
     st.markdown("<h2 style='color:#009688;'>Brussels</h2>", unsafe_allow_html=True)
-    st.caption("STIB network visualisation. Mode selection is ready; mode-specific controls will be added next.")
+    st.caption("STIB network visualisation. Mode selection; filter controls; analysis; export")
 
     with st.spinner("Loading STIB network geometry..."):
         geojson_str = build_geojson_with_style(token, st.session_state["brussels_colorized"])
