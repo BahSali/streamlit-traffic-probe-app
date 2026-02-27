@@ -85,6 +85,7 @@ with content_box:
     with col_legend:
         st.markdown(legend_html(), unsafe_allow_html=True)
 
+    # ------------------------------Overview---------------------------------------------
     st.markdown("---")
     st.markdown("### Overview")
 
@@ -94,5 +95,5 @@ with content_box:
     col1, col2, col3 = st.columns(3)
 
     col1.metric("Mode", mode)
-    col2.metric("Total features", total_features)
-    col3.metric("Colorized", "Yes" if colorized else "No")
+    col2.metric("Number of segments", 1366)
+    col3.metric("Number of bus lines",)
