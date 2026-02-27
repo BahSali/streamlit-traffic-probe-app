@@ -1,6 +1,6 @@
-
 import streamlit as st
 import folium
+from folium.features import GeoJsonTooltip
 from streamlit_folium import st_folium
 
 from core.styles import inject_styles
@@ -8,7 +8,6 @@ from core.colors import get_speed_color, legend_html
 from core.data_sources import fetch_stib_shapefile
 from core.map_render import center_from_bounds
 from core.nav_panel import render_left_panel
-from core.ui.brussels_controls import brussels_left_controls
 
 
 st.set_page_config(page_title="Brussels", layout="wide")
@@ -16,53 +15,84 @@ inject_styles()
 
 settings_box, content_box = render_left_panel("Brussels")
 
-# --- Secrets ---
-if "STIB_TOKEN" not in st.secrets:
-    with content_box:
-        st.error("Missing STIB_TOKEN in st.secrets. Add it to .streamlit/secrets.toml or Streamlit Cloud Secrets.")
-    st.stop()
-token = st.secrets["STIB_TOKEN"]
+with settings_box:
+    st.markdown("### Brussels settings")
 
-# --- Session state ---
-if "brussels_colorized" not in st.session_state:
-    st.session_state["brussels_colorized"] = False
+    st.checkbox(
+        "Show speed in tooltip",
+        value=True,
+        key="bru_show_speed",
+    )
 
-# --- Left panel controls (mode + colorize button) ---
-controls = brussels_left_controls(settings_box)
-
-if controls["colorize_clicked"]:
-    st.session_state["brussels_colorized"] = True
-
-mode = controls["mode"]  # not used yet (next step: conditional settings)
-
-@st.cache_data(show_spinner=False, ttl=3600)
-def build_geojson_with_style(token_value: str, colorized: bool) -> str:
-    gdf = fetch_stib_shapefile(token_value)
-
-    for col in ["ligne", "variante"]:
-        if col not in gdf.columns:
-            gdf[col] = "N/A"
-
-    if colorized:
-        speeds = {i: float(3 + (i * 7) % 55) for i in range(len(gdf))}
-        gdf["__speed"] = [speeds[i] for i in range(len(gdf))]
-        gdf["__speed_str"] = gdf["__speed"].map(lambda v: f"{v:.1f}")
-        gdf["__color"] = gdf["__speed"].apply(get_speed_color)
-    else:
-        gdf["__speed_str"] = ""
-        gdf["__color"] = "black"
-
-    return gdf.to_json()
+    st.slider(
+        "Line weight",
+        min_value=1.0,
+        max_value=6.0,
+        value=2.5,
+        step=0.5,
+        key="bru_weight",
+    )
 
 with content_box:
     st.markdown("<h2 style='color:#009688;'>Brussels</h2>", unsafe_allow_html=True)
-    st.caption("STIB network visualisation. Mode selection is ready; mode-specific controls will be added next.")
+    st.caption("STIB network visualisation. Tooltip changes before/after colorisation.")
+
+    # --- Secrets ---
+    if "STIB_TOKEN" not in st.secrets:
+        st.error("Missing STIB_TOKEN in st.secrets. Add it to .streamlit/secrets.toml or Streamlit Cloud Secrets.")
+        st.stop()
+    token = st.secrets["STIB_TOKEN"]
+
+    # --- Session state ---
+    if "brussels_colorized" not in st.session_state:
+        st.session_state["brussels_colorized"] = False
+
+    # --- UI controls (main area buttons) ---
+    col_a, col_b, col_c = st.columns([2, 3, 2])
+    with col_b:
+        if st.button("Colorize network (demo)", use_container_width=True):
+            st.session_state["brussels_colorized"] = True
+        if st.button("Reset", use_container_width=True):
+            st.session_state["brussels_colorized"] = False
+
+    @st.cache_data(show_spinner=False, ttl=3600)
+    def build_geojson_with_style(token_value: str, colorized: bool) -> str:
+        gdf = fetch_stib_shapefile(token_value)
+
+        for col in ["ligne", "variante"]:
+            if col not in gdf.columns:
+                gdf[col] = "N/A"
+
+        if colorized:
+            speeds = {i: float(3 + (i * 7) % 55) for i in range(len(gdf))}
+            gdf["__speed"] = [speeds[i] for i in range(len(gdf))]
+            gdf["__speed_str"] = gdf["__speed"].map(lambda v: f"{v:.1f}")
+            gdf["__color"] = gdf["__speed"].apply(get_speed_color)
+        else:
+            gdf["__speed_str"] = ""
+            gdf["__color"] = "black"
+
+        return gdf.to_json()
 
     with st.spinner("Loading STIB network geometry..."):
         geojson_str = build_geojson_with_style(token, st.session_state["brussels_colorized"])
 
+    # Map center (bounds-based)
     gdf_center_source = fetch_stib_shapefile(token)
     center = center_from_bounds(gdf_center_source)
+
+    # Tooltip logic uses the checkbox + the colorized state
+    show_speed = st.session_state.get("bru_show_speed", True)
+    is_colorized = st.session_state["brussels_colorized"]
+
+    if show_speed and is_colorized:
+        tooltip_fields = ["ligne", "variante", "__speed_str"]
+        tooltip_aliases = ["Line:", "Variant:", "Speed:"]
+    else:
+        tooltip_fields = ["ligne", "variante"]
+        tooltip_aliases = ["Line:", "Variant:"]
+
+    line_weight = st.session_state.get("bru_weight", 2.5)
 
     m = folium.Map(location=center, zoom_start=11, control_scale=True)
 
@@ -70,11 +100,11 @@ with content_box:
         data=geojson_str,
         style_function=lambda feature: {
             "color": feature["properties"].get("__color", "black"),
-            "weight": 2.5,
+            "weight": line_weight,
         },
-        tooltip=folium.GeoJsonTooltip(
-            fields=["ligne", "variante"] + (["__speed_str"] if st.session_state["brussels_colorized"] else []),
-            aliases=["Line:", "Variant:"] + (["Speed:"] if st.session_state["brussels_colorized"] else []),
+        tooltip=GeoJsonTooltip(
+            fields=tooltip_fields,
+            aliases=tooltip_aliases,
             sticky=True,
         ),
         name="STIB",
@@ -82,6 +112,12 @@ with content_box:
 
     col_map, col_legend = st.columns([4, 1], vertical_alignment="top")
     with col_map:
-        st_folium(m, width=850, height=550, key="brussels_map", returned_objects=[])
+        st_folium(
+            m,
+            width=850,
+            height=550,
+            key="brussels_map",
+            returned_objects=[],
+        )
     with col_legend:
         st.markdown(legend_html(), unsafe_allow_html=True)
