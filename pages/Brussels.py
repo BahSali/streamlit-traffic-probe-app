@@ -85,4 +85,17 @@ with content_box:
     with col_legend:
         st.markdown(legend_html(), unsafe_allow_html=True)
 
-    
+    # ------------------------------Overview---------------------------------------------
+    st.markdown("---")
+    st.markdown("### Overview")
+
+    total_features = len(fetch_stib_shapefile(token))
+    colorized = st.session_state["brussels_colorized"]
+
+    col1, col2, col3 = st.columns(3)
+
+    col1.metric("Mode", mode)
+    col2.metric("Number of segments", 1366)
+    col3.metric("Number of bus lines", 53)
+
+   
