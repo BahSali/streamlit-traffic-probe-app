@@ -96,4 +96,4 @@ with content_box:
 
     col1.metric("Mode", mode)
     col2.metric("Number of segments", 1366)
-    col3.metric("Number of bus lines", X)
+    col3.metric("Number of bus lines", 34)
