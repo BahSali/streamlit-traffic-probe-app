@@ -85,7 +85,13 @@ with content_box:
     with col_legend:
         st.markdown(legend_html(), unsafe_allow_html=True)
 
-    # ------------------------------Overview---------------------------------------------
+    # ------------------------------Export and Overview---------------------------------------------
+    st.markdown("---")
+    st.markdown("### Export")
+
+    if st.button("Download results (prototype)"):
+        st.info("Prototype only — download not implemented yet.")
+
     st.markdown("---")
     st.markdown("### Overview")
 
@@ -98,10 +104,3 @@ with content_box:
     col2.metric("Number of segments", 1366)
     col3.metric("Number of bus lines", 53)
 
-    st.markdown("---")
-    st.markdown("### Export")
-
-    if st.button("Download results (prototype)", use_container_width=True):
-        st.info("Prototype only — download not implemented yet.")
-
-   
