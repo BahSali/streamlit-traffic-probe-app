@@ -1,3 +1,4 @@
+
 import streamlit as st
 
 MODE_OPTIONS = ["Segment", "Street"]
@@ -16,25 +17,48 @@ def brussels_left_controls(
     with settings_box:
         st.markdown("### Brussels controls")
 
-        # Use a form to prevent rerun on every widget change
-        with st.form("bru_controls_form", clear_on_submit=False):
-            mode = st.selectbox(
-                "Presentation Mode",
-                MODE_OPTIONS,
-                index=0,
-                key="bru_mode",
+        mode = st.selectbox(
+            "Presentation Mode",
+            MODE_OPTIONS,
+            index=0,
+            key="bru_mode",
+        )
+
+        st.markdown("---")
+        st.markdown("**Filters (OR logic)**")
+
+        filters = {"segment_names": [], "bus_ids": [], "streets": []}
+
+        if mode == "Segment":
+            filters["segment_names"] = st.multiselect(
+                "Segment name(s)",
+                options=segment_options,
+                default=[],
+                key="bru_seg_names",
+            )
+            filters["bus_ids"] = st.multiselect(
+                "Bus ID(s)",
+                options=bus_id_options,
+                default=[],
+                key="bru_bus_ids",
             )
 
-            st.markdown("---")
-            st.markdown("**Filters (OR logic)**")
+        elif mode == "Street":
+            filters["streets"] = st.multiselect(
+                "Street(s)",
+                options=street_options,
+                default=[],
+                key="bru_streets",
+            )
 
-            filters = {"segment_names": [], "bus_ids": [], "streets": []}
+        st.markdown("---")
+        colorize = st.button(
+            "Colorize network",
+            use_container_width=True,
+            key="bru_colorize_btn",
+        )
 
-            if mode == "Segment":
-                filters["segment_names"] = st.multiselect(
-                    "Segment name(s)",
-                    options=segment_options,
-                    default=st.session_state.get("bru_seg_names", []),
+    return {"mode": mode, "filters": filters, "colorize_clicked": colorize}                    default=st.session_state.get("bru_seg_names", []),
                     key="bru_seg_names",
                 )
                 filters["bus_ids"] = st.multiselect(
