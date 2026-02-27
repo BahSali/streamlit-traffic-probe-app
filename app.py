@@ -23,6 +23,6 @@ with content_box:
     )
     st.caption(
         "**Datasets / Study Areas:**\n"
-        "- **iXcell subnetwork (Brussels)** — [paper link](YOUR_IXCELL_PAPER_URL)\n"
-        "- **Brussels bus transportation network (code)** — [paper link](YOUR_NETWORK_PAPER_URL)"
+        "- **Ixelles-Etterbeek region (Brussels)** — [paper link](https://dl.acm.org/doi/abs/10.1145/3748636.3762759)\n"
+        "- **Brussels citywide bus transportation network** — [paper link](YOUR_NETWORK_PAPER_URL)"
     )
