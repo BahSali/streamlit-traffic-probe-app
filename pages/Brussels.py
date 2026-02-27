@@ -84,3 +84,15 @@ with content_box:
         st_folium(m, width=850, height=550, key="brussels_map", returned_objects=[])
     with col_legend:
         st.markdown(legend_html(), unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.markdown("### Overview")
+
+    total_features = len(fetch_stib_shapefile(token))
+    colorized = st.session_state["brussels_colorized"]
+
+    col1, col2, col3 = st.columns(3)
+
+    col1.metric("Mode", mode)
+    col2.metric("Total features", total_features)
+    col3.metric("Colorized", "Yes" if colorized else "No")
