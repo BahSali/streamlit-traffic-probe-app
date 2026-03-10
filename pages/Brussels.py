@@ -167,9 +167,9 @@ def build_three_map_html(geojson_obj, center_lat, center_lon):
       <div>Google proxy</div>
     </div>
     <div class="maps">
-      <div id="map1" class="map"></div>
-      <div id="map2" class="map"></div>
-      <div id="map3" class="map"></div>
+      <div>Observed Bus-Derived Speeds (STIB)</div>
+      <div>Model-Derived Street Speed Estimates</div>
+      <div>Google Routes API-Derived Speeds</div>
     </div>
   </div>
 
