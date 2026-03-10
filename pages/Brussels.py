@@ -27,10 +27,12 @@ if "brussels_colorized" not in st.session_state:
     st.session_state["brussels_colorized"] = False
 
 controls = brussels_left_controls(settings_box)
+
 if controls["colorize_clicked"]:
     st.session_state["brussels_colorized"] = True
 
-mode = controls["mode"]
+if controls["reset_clicked"]:
+    st.session_state["brussels_colorized"] = False
 
 
 # ---------------------- helpers ----------------------
