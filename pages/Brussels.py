@@ -5,7 +5,7 @@ import streamlit.components.v1 as components
 
 from core.styles import inject_styles
 from core.colors import get_speed_color, legend_html
-from core.data_sources import fetch_stib_shapefile
+from core.data_sources import load_gpkg
 from core.nav_panel import render_left_panel
 from core.ui.brussels_controls import brussels_left_controls
 
@@ -15,32 +15,30 @@ inject_styles()
 
 settings_box, content_box = render_left_panel("Brussels")
 
-# ---------------------- Secrets ----------------------
-if "STIB_TOKEN" not in st.secrets:
-    with content_box:
-        st.error("Missing STIB_TOKEN in st.secrets.")
-    st.stop()
+MAP_PATH = "data/Brussels_map_6km.gpkg"
+METADATA_PATH = "data/segments_metadata.csv"
 
-token = st.secrets["STIB_TOKEN"]
 
-# ---------------------- Session state ----------------------
 if "brussels_colorized" not in st.session_state:
     st.session_state["brussels_colorized"] = False
 
 
-# ---------------------- Metadata helpers ----------------------
 @st.cache_data(show_spinner=False)
-def load_segments_metadata(path: str = "data/segments_metadata.csv") -> pd.DataFrame:
+def load_segments_metadata(path: str = METADATA_PATH) -> pd.DataFrame:
     df = pd.read_csv(path).copy()
 
-    # Build the display label for the segment filter.
+    # Metadata ids are 1-based, while the map rows are used as 0-based indices.
+    # This creates a common key that can be matched against the map row index.
+    df["map_index"] = df["id"].astype(int) - 1
+
+    # Build the segment label for filters and tooltips.
     df["segment_name"] = (
         df["start_name"].fillna("").astype(str).str.strip()
         + " - "
         + df["end_name"].fillna("").astype(str).str.strip()
     )
 
-    # Split bus_lines into a list.
+    # Convert bus_lines into a normalized list of strings.
     def split_bus_lines(value):
         if pd.isna(value):
             return []
@@ -48,7 +46,22 @@ def load_segments_metadata(path: str = "data/segments_metadata.csv") -> pd.DataF
         return [item.strip() for item in text.split(",") if item.strip()]
 
     df["bus_line_list"] = df["bus_lines"].apply(split_bus_lines)
+
     return df
+
+
+@st.cache_data(show_spinner=False)
+def load_brussels_map(path: str = MAP_PATH):
+    gdf = load_gpkg(path).copy()
+
+    if gdf.crs is not None and str(gdf.crs).upper() != "EPSG:4326":
+        gdf = gdf.to_crs(epsg=4326)
+
+    # Use the row position as the 0-based map index.
+    gdf = gdf.reset_index(drop=True)
+    gdf["map_index"] = gdf.index.astype(int)
+
+    return gdf
 
 
 @st.cache_data(show_spinner=False)
@@ -76,16 +89,10 @@ def get_filter_options():
     return segment_options, bus_id_options
 
 
-def build_selected_segment_keys(
+def get_selected_map_indices(
     selected_segment_names: list[str],
     selected_bus_ids: list[str],
-) -> set[tuple[float, float, float, float]]:
-    """
-    Create a set of endpoint-based keys for metadata rows selected by the user.
-    A row is selected if:
-    - its segment_name is selected, OR
-    - any of its bus_line_list values is selected
-    """
+) -> set[int]:
     meta = load_segments_metadata().copy()
 
     selected_segment_names = set(selected_segment_names or [])
@@ -109,58 +116,57 @@ def build_selected_segment_keys(
     if selected_meta.empty:
         return set()
 
-    selected_meta["segment_key"] = selected_meta.apply(
-        lambda row: (
-            round(float(row["start_lon"]), 6),
-            round(float(row["start_lat"]), 6),
-            round(float(row["end_lon"]), 6),
-            round(float(row["end_lat"]), 6),
-        ),
-        axis=1,
-    )
-
-    return set(selected_meta["segment_key"].tolist())
+    return set(selected_meta["map_index"].astype(int).tolist())
 
 
-# ---------------------- Data preparation ----------------------
 @st.cache_data(show_spinner=False, ttl=3600)
 def prepare_three_map_geojson(
-    token_value: str,
     colorized: bool,
     selected_segment_names: tuple[str, ...],
     selected_bus_ids: tuple[str, ...],
 ):
-    gdf = fetch_stib_shapefile(token_value).copy()
+    gdf = load_brussels_map().copy()
+    meta = load_segments_metadata().copy()
 
-    # Make sure the geometry is in WGS84.
-    try:
-        if gdf.crs is not None and str(gdf.crs).upper() != "EPSG:4326":
-            gdf = gdf.to_crs(epsg=4326)
-    except Exception:
-        pass
+    # Join metadata to the map using the 0-based map index.
+    meta_for_merge = meta[
+        ["map_index", "segment_name", "bus_lines", "start_name", "end_name"]
+    ].copy()
 
-    for col in ["ligne", "variante"]:
-        if col not in gdf.columns:
-            gdf[col] = "N/A"
+    gdf = gdf.merge(meta_for_merge, on="map_index", how="left", suffixes=("", "_meta"))
 
-    # Build a geometry-based key for each segment in the STIB GeoDataFrame.
-    gdf["segment_key"] = gdf.geometry.apply(
-        lambda geom: (
-            round(float(geom.coords[0][0]), 6),
-            round(float(geom.coords[0][1]), 6),
-            round(float(geom.coords[-1][0]), 6),
-            round(float(geom.coords[-1][1]), 6),
-        )
-        if geom is not None and hasattr(geom, "coords")
-        else None
-    )
+    # Fallback values for tooltip fields.
+    if "segment_name" not in gdf.columns:
+        gdf["segment_name"] = "N/A"
+    gdf["segment_name"] = gdf["segment_name"].fillna("N/A")
 
-    selected_segment_keys = build_selected_segment_keys(
+    if "bus_lines_meta" in gdf.columns:
+        gdf["bus_lines_display"] = gdf["bus_lines_meta"].fillna("")
+    elif "bus_lines" in gdf.columns:
+        gdf["bus_lines_display"] = gdf["bus_lines"].fillna("")
+    else:
+        gdf["bus_lines_display"] = ""
+
+    if "start_name_meta" in gdf.columns:
+        gdf["start_name_display"] = gdf["start_name_meta"].fillna("")
+    elif "start_name" in gdf.columns:
+        gdf["start_name_display"] = gdf["start_name"].fillna("")
+    else:
+        gdf["start_name_display"] = ""
+
+    if "end_name_meta" in gdf.columns:
+        gdf["end_name_display"] = gdf["end_name_meta"].fillna("")
+    elif "end_name" in gdf.columns:
+        gdf["end_name_display"] = gdf["end_name"].fillna("")
+    else:
+        gdf["end_name_display"] = ""
+
+    selected_map_indices = get_selected_map_indices(
         list(selected_segment_names),
         list(selected_bus_ids),
     )
 
-    # Map 1 and Map 2 are colorized entirely when colorization is enabled.
+    # Map 1 and Map 2 are colorized entirely when enabled.
     if colorized:
         gdf["bus_speed"] = [float(8 + (i * 5) % 48) for i in range(len(gdf))]
         gdf["est_speed"] = [float(12 + (i * 7) % 42) for i in range(len(gdf))]
@@ -168,14 +174,13 @@ def prepare_three_map_geojson(
         gdf["bus_speed"] = [None] * len(gdf)
         gdf["est_speed"] = [None] * len(gdf)
 
-    # Map 3 is colorized only for the segments selected in the left filter.
+    # Map 3 is colorized only for selected segments.
     google_speed_values = []
-    for i, row in gdf.iterrows():
-        if colorized and row["segment_key"] in selected_segment_keys:
+    for i in range(len(gdf)):
+        if colorized and i in selected_map_indices:
             google_speed_values.append(float(10 + (i * 6) % 45))
         else:
             google_speed_values.append(None)
-
     gdf["google_speed"] = google_speed_values
 
     def format_speed(value):
@@ -210,10 +215,10 @@ def prepare_three_map_geojson(
         "center_lat": center_lat,
         "center_lon": center_lon,
         "selected_google_count": selected_google_count,
+        "segment_count": len(gdf),
     }
 
 
-# ---------------------- HTML builder ----------------------
 def build_three_map_html(geojson_obj, center_lat, center_lon):
     geojson_str = json.dumps(geojson_obj)
 
@@ -223,12 +228,10 @@ def build_three_map_html(geojson_obj, center_lat, center_lon):
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
   <link
     rel="stylesheet"
     href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
   />
-
   <style>
     html, body {{
       margin: 0;
@@ -252,7 +255,6 @@ def build_three_map_html(geojson_obj, center_lat, center_lon):
       grid-template-columns: 1fr 1fr 1fr;
       gap: 8px;
       font-weight: 700;
-      font-size: 15px;
       color: #1f2937;
     }}
 
@@ -355,8 +357,8 @@ def build_three_map_html(geojson_obj, center_lat, center_lon):
       const p = feature.properties || {{}};
       const html = `
         <div>
-          <b>Line:</b> ${{p.ligne ?? 'N/A'}}<br>
-          <b>Variant:</b> ${{p.variante ?? 'N/A'}}<br>
+          <b>Segment:</b> ${{p.segment_name ?? 'N/A'}}<br>
+          <b>Bus lines:</b> ${{p.bus_lines_display ?? ''}}<br>
           <b>Bus speed:</b> ${{p.bus_speed_str ?? ''}}
         </div>
       `;
@@ -367,8 +369,8 @@ def build_three_map_html(geojson_obj, center_lat, center_lon):
       const p = feature.properties || {{}};
       const html = `
         <div>
-          <b>Line:</b> ${{p.ligne ?? 'N/A'}}<br>
-          <b>Variant:</b> ${{p.variante ?? 'N/A'}}<br>
+          <b>Segment:</b> ${{p.segment_name ?? 'N/A'}}<br>
+          <b>Bus lines:</b> ${{p.bus_lines_display ?? ''}}<br>
           <b>Estimated speed:</b> ${{p.est_speed_str ?? ''}}
         </div>
       `;
@@ -418,7 +420,6 @@ def build_three_map_html(geojson_obj, center_lat, center_lon):
     return html
 
 
-# ---------------------- Controls ----------------------
 segment_options, bus_id_options = get_filter_options()
 
 controls = brussels_left_controls(
@@ -434,14 +435,12 @@ if controls["reset_clicked"]:
     st.session_state["brussels_colorized"] = False
 
 
-# ---------------------- Page ----------------------
 with content_box:
     st.markdown("<h2 style='color:#009688;'>Brussels</h2>", unsafe_allow_html=True)
     st.caption("Three synced maps for bus-derived, model-derived, and Google-derived speed comparison.")
 
-    with st.spinner("Loading STIB network geometry..."):
+    with st.spinner("Loading Brussels map geometry..."):
         payload = prepare_three_map_geojson(
-            token,
             st.session_state["brussels_colorized"],
             tuple(controls["filters"]["segment_names"]),
             tuple(controls["filters"]["bus_ids"]),
@@ -462,15 +461,9 @@ with content_box:
         st.markdown(legend_html(), unsafe_allow_html=True)
 
     st.markdown("---")
-    st.markdown("### Export")
-
-    if st.button("Download results (prototype)"):
-        st.info("Prototype only — download not implemented yet.")
-
-    st.markdown("---")
     st.markdown("### Overview")
 
     col1, col2, col3 = st.columns(3)
     col1.metric("Colorized", "Yes" if st.session_state["brussels_colorized"] else "No")
     col2.metric("Google-colored segments", payload["selected_google_count"])
-    col3.metric("Available bus lines", len(bus_id_options))
+    col3.metric("Map segments", payload["segment_count"])
