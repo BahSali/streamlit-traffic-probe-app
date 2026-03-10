@@ -113,7 +113,7 @@ def build_three_map_html(geojson_obj, center_lat, center_lon):
 
     .wrapper {{
       width: 100%;
-      height: 860px;
+      height: 660px;
       display: flex;
       flex-direction: column;
       gap: 8px;
@@ -147,7 +147,7 @@ def build_three_map_html(geojson_obj, center_lat, center_lon):
     .map {{
       width: 100%;
       height: 100%;
-      min-height: 780px;
+      min-height: 580px;
       border: 1px solid #d1d5db;
       border-radius: 8px;
       overflow: hidden;
