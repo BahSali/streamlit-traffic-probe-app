@@ -113,7 +113,7 @@ def build_three_map_html(geojson_obj, center_lat, center_lon):
 
     .wrapper {{
       width: 100%;
-      height: 660px;
+      height: 460px;
       display: flex;
       flex-direction: column;
       gap: 8px;
