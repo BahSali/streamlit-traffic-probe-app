@@ -32,14 +32,6 @@ def brussels_left_controls(
             key="bru_bus_ids",
         )
 
-        has_pending_changes = (
-            selected_segments != applied_segment_names
-            or selected_bus_ids != applied_bus_ids
-        )
-
-        if has_pending_changes and not colorize:
-            st.warning("Filters changed. Click 'Colorize network' to apply them to the maps.")
-
         st.markdown("---")
 
         colorize = st.button(
@@ -53,6 +45,14 @@ def brussels_left_controls(
             use_container_width=True,
             key="bru_reset_colorize_btn",
         )
+
+        has_pending_changes = (
+            selected_segments != applied_segment_names
+            or selected_bus_ids != applied_bus_ids
+        )
+
+        if has_pending_changes and not colorize:
+            st.warning("Filters changed. Click 'Colorize network' to apply them to the maps.")
 
     return {
         "filters": {
