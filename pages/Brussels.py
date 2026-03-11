@@ -1,4 +1,6 @@
 import json
+import re
+
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
@@ -24,27 +26,45 @@ if "brussels_colorized" not in st.session_state:
 
 
 @st.cache_data(show_spinner=False)
+def parse_bus_lines(value) -> list[str]:
+    if pd.isna(value):
+        return []
+
+    text = str(value).strip()
+
+    # Extract alphanumeric route tokens robustly.
+    # This works for formats like:
+    # "71, 95"
+    # "71;95"
+    # "[71, 95]"
+    # "['71', '95']"
+    tokens = re.findall(r"[A-Za-z0-9]+", text)
+
+    cleaned = []
+    for token in tokens:
+        token = token.strip()
+        if token:
+            cleaned.append(token)
+
+    return cleaned
+
+
+@st.cache_data(show_spinner=False)
 def load_segments_metadata(path: str = METADATA_PATH) -> pd.DataFrame:
     df = pd.read_csv(path).copy()
 
-    # CSV ids are 1-based.
-    # The map fid is treated here as the GeoDataFrame row index, which is 0-based.
+    # CSV id is 1-based.
+    # The map fid-equivalent is treated as the GeoDataFrame row index, which is 0-based.
     df["map_fid"] = df["id"].astype(int) - 1
 
-    # Segment label used in the left-side filter.
     df["segment_name"] = (
         df["start_name"].fillna("").astype(str).str.strip()
         + " - "
         + df["end_name"].fillna("").astype(str).str.strip()
     )
 
-    def split_bus_lines(value):
-        if pd.isna(value):
-            return []
-        text = str(value).replace(";", ",")
-        return [item.strip() for item in text.split(",") if item.strip()]
+    df["bus_line_list"] = df["bus_lines"].apply(parse_bus_lines)
 
-    df["bus_line_list"] = df["bus_lines"].apply(split_bus_lines)
     return df
 
 
@@ -55,17 +75,26 @@ def load_brussels_map(path: str = MAP_PATH):
     if gdf.crs is not None and str(gdf.crs).upper() != "EPSG:4326":
         gdf = gdf.to_crs(epsg=4326)
 
-    # Keep the row index as the fid-equivalent key.
+    # Use the row index as the fid-equivalent key.
     gdf = gdf.reset_index(drop=True)
     gdf["map_fid"] = gdf.index.astype(int)
 
-    # Build display fields directly from the GPKG itself.
+    # Build tooltip fields directly from the GPKG.
+    if "start_name" not in gdf.columns:
+        gdf["start_name"] = ""
+    if "end_name" not in gdf.columns:
+        gdf["end_name"] = ""
+    if "bus_lines" not in gdf.columns:
+        gdf["bus_lines"] = ""
+
     gdf["segment_name"] = (
         gdf["start_name"].fillna("").astype(str).str.strip()
         + " - "
         + gdf["end_name"].fillna("").astype(str).str.strip()
     )
+    gdf["segment_name"] = gdf["segment_name"].replace(" - ", "").fillna("N/A")
     gdf["bus_lines_display"] = gdf["bus_lines"].fillna("").astype(str)
+    gdf["bus_line_list"] = gdf["bus_lines"].apply(parse_bus_lines)
 
     return gdf
 
@@ -101,13 +130,8 @@ def get_selected_map_fids(
 ) -> set[int]:
     meta = load_segments_metadata().copy()
 
-    selected_segment_names = set(selected_segment_names or [])
-    selected_bus_ids = set(selected_bus_ids or [])
-
-    def row_matches_bus_ids(bus_list):
-        if not selected_bus_ids:
-            return False
-        return any(bus_id in selected_bus_ids for bus_id in bus_list)
+    selected_segment_names = {str(x).strip() for x in (selected_segment_names or []) if str(x).strip()}
+    selected_bus_ids = {str(x).strip() for x in (selected_bus_ids or []) if str(x).strip()}
 
     mask = pd.Series(False, index=meta.index)
 
@@ -115,7 +139,9 @@ def get_selected_map_fids(
         mask = mask | meta["segment_name"].isin(selected_segment_names)
 
     if selected_bus_ids:
-        mask = mask | meta["bus_line_list"].apply(row_matches_bus_ids)
+        mask = mask | meta["bus_line_list"].apply(
+            lambda bus_list: any(bus_id in selected_bus_ids for bus_id in bus_list)
+        )
 
     selected_meta = meta.loc[mask].copy()
 
@@ -138,7 +164,7 @@ def prepare_three_map_geojson(
         list(selected_bus_ids),
     )
 
-    # Map 1 and Map 2: color all segments when enabled.
+    # Fake speeds for now.
     if colorized:
         gdf["bus_speed"] = [float(8 + (i * 5) % 48) for i in range(len(gdf))]
         gdf["est_speed"] = [float(12 + (i * 7) % 42) for i in range(len(gdf))]
@@ -146,18 +172,29 @@ def prepare_three_map_geojson(
         gdf["bus_speed"] = [None] * len(gdf)
         gdf["est_speed"] = [None] * len(gdf)
 
-    # Map 3: color only the filtered segments.
     google_speed_values = []
+    google_color_values = []
+
     for _, row in gdf.iterrows():
-        if colorized and int(row["map_fid"]) in selected_map_fids:
-            google_speed_values.append(float(10 + (int(row["map_fid"]) * 6) % 45))
+        fid = int(row["map_fid"])
+
+        if colorized and fid in selected_map_fids:
+            google_speed = float(10 + (fid * 6) % 45)
+            google_color = get_speed_color(google_speed)
         else:
-            google_speed_values.append(None)
+            google_speed = None
+            # Keep all non-selected segments visible in black on map 3.
+            google_color = "#000000"
+
+        google_speed_values.append(google_speed)
+        google_color_values.append(google_color)
+
     gdf["google_speed"] = google_speed_values
+    gdf["google_color"] = google_color_values
 
     def format_speed(value):
         if value is None or pd.isna(value):
-            return ""
+            return "N/A"
         return f"{float(value):.1f} km/h"
 
     gdf["bus_speed_str"] = gdf["bus_speed"].apply(format_speed)
@@ -170,8 +207,16 @@ def prepare_three_map_geojson(
     gdf["est_color"] = gdf["est_speed"].apply(
         lambda value: get_speed_color(value) if value is not None else "#222222"
     )
-    gdf["google_color"] = gdf["google_speed"].apply(
-        lambda value: get_speed_color(value) if value is not None else "transparent"
+
+    # Highlight colors inside tooltips.
+    gdf["bus_highlight_color"] = gdf["bus_speed"].apply(
+        lambda value: get_speed_color(value) if value is not None else "#222222"
+    )
+    gdf["est_highlight_color"] = gdf["est_speed"].apply(
+        lambda value: get_speed_color(value) if value is not None else "#222222"
+    )
+    gdf["google_highlight_color"] = gdf["google_speed"].apply(
+        lambda value: get_speed_color(value) if value is not None else "#000000"
     )
 
     minx, miny, maxx, maxy = gdf.total_bounds
@@ -179,7 +224,7 @@ def prepare_three_map_geojson(
     center_lon = (minx + maxx) / 2
 
     geojson = json.loads(gdf.to_json())
-    selected_google_count = int(gdf["google_speed"].notna().sum())
+    selected_google_count = int(sum(fid in selected_map_fids for fid in gdf["map_fid"].tolist()))
 
     return {
         "geojson": geojson,
@@ -258,6 +303,15 @@ def build_three_map_html(geojson_obj, center_lat, center_lon):
     .leaflet-tooltip {{
       font-size: 12px;
       padding: 6px 8px;
+      line-height: 1.45;
+    }}
+
+    .metric-highlight {{
+      display: inline-block;
+      color: #ffffff;
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-weight: 700;
     }}
   </style>
 </head>
@@ -326,11 +380,16 @@ def build_three_map_html(geojson_obj, center_lat, center_lon):
 
     function busTooltip(feature, layer) {{
       const p = feature.properties || {{}};
+
       const html = `
         <div>
           <b>Segment:</b> ${{p.segment_name ?? 'N/A'}}<br>
           <b>Bus lines:</b> ${{p.bus_lines_display ?? ''}}<br>
-          <b>Bus speed:</b> ${{p.bus_speed_str ?? ''}}
+          <b>Bus speed:</b>
+          <span class="metric-highlight" style="background:${{p.bus_highlight_color ?? '#222222'}};">
+            ${{p.bus_speed_str ?? 'N/A'}}
+          </span><br>
+          <b>Estimated speed:</b> ${{p.est_speed_str ?? 'N/A'}}
         </div>
       `;
       layer.bindTooltip(html, {{ sticky: true }});
@@ -338,11 +397,34 @@ def build_three_map_html(geojson_obj, center_lat, center_lon):
 
     function estimatedTooltip(feature, layer) {{
       const p = feature.properties || {{}};
+
       const html = `
         <div>
           <b>Segment:</b> ${{p.segment_name ?? 'N/A'}}<br>
           <b>Bus lines:</b> ${{p.bus_lines_display ?? ''}}<br>
-          <b>Estimated speed:</b> ${{p.est_speed_str ?? ''}}
+          <b>Bus speed:</b> ${{p.bus_speed_str ?? 'N/A'}}<br>
+          <b>Estimated speed:</b>
+          <span class="metric-highlight" style="background:${{p.est_highlight_color ?? '#222222'}};">
+            ${{p.est_speed_str ?? 'N/A'}}
+          </span>
+        </div>
+      `;
+      layer.bindTooltip(html, {{ sticky: true }});
+    }}
+
+    function googleTooltip(feature, layer) {{
+      const p = feature.properties || {{}};
+
+      const html = `
+        <div>
+          <b>Segment:</b> ${{p.segment_name ?? 'N/A'}}<br>
+          <b>Bus lines:</b> ${{p.bus_lines_display ?? ''}}<br>
+          <b>Bus speed:</b> ${{p.bus_speed_str ?? 'N/A'}}<br>
+          <b>Estimated speed:</b> ${{p.est_speed_str ?? 'N/A'}}<br>
+          <b>Google-reported speed:</b>
+          <span class="metric-highlight" style="background:${{p.google_highlight_color ?? '#000000'}};">
+            ${{p.google_speed_str ?? 'N/A'}}
+          </span>
         </div>
       `;
       layer.bindTooltip(html, {{ sticky: true }});
@@ -359,23 +441,8 @@ def build_three_map_html(geojson_obj, center_lat, center_lon):
     }}).addTo(map2);
 
     const layer3 = L.geoJSON(data, {{
-      style: function(feature) {{
-        const color = feature.properties.google_color || 'transparent';
-
-        if (color === 'transparent') {{
-          return {{
-            color: 'transparent',
-            weight: 0,
-            opacity: 0
-          }};
-        }}
-
-        return {{
-          color: color,
-          weight: 3,
-          opacity: 0.95
-        }};
-      }}
+      style: styleFactory('google_color'),
+      onEachFeature: googleTooltip
     }}).addTo(map3);
 
     try {{
