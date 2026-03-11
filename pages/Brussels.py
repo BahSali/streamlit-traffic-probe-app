@@ -1,4 +1,6 @@
 import json
+import sqlite3
+
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
@@ -26,15 +28,17 @@ if "brussels_colorized" not in st.session_state:
 def load_segments_metadata(path: str = METADATA_PATH) -> pd.DataFrame:
     df = pd.read_csv(path).copy()
 
-    # CSV ids are 1-based. The map uses fid. We align them by subtracting 1.
+    # Metadata ids are 1-based and must be matched to map fid values.
     df["map_fid"] = df["id"].astype(int) - 1
 
+    # Build the segment label used in filters and tooltips.
     df["segment_name"] = (
         df["start_name"].fillna("").astype(str).str.strip()
         + " - "
         + df["end_name"].fillna("").astype(str).str.strip()
     )
 
+    # Normalize bus lines into a list.
     def split_bus_lines(value):
         if pd.isna(value):
             return []
@@ -42,21 +46,66 @@ def load_segments_metadata(path: str = METADATA_PATH) -> pd.DataFrame:
         return [item.strip() for item in text.split(",") if item.strip()]
 
     df["bus_line_list"] = df["bus_lines"].apply(split_bus_lines)
+
+    return df
+
+
+@st.cache_data(show_spinner=False)
+def get_gpkg_feature_table(path: str = MAP_PATH) -> str:
+    con = sqlite3.connect(path)
+    try:
+        table_df = pd.read_sql_query(
+            "SELECT table_name FROM gpkg_contents WHERE data_type = 'features' LIMIT 1",
+            con,
+        )
+    finally:
+        con.close()
+
+    if table_df.empty:
+        raise ValueError("No feature table was found in the GPKG file.")
+
+    return table_df.iloc[0]["table_name"]
+
+
+@st.cache_data(show_spinner=False)
+def load_gpkg_fid_mapping(path: str = MAP_PATH) -> pd.DataFrame:
+    table_name = get_gpkg_feature_table(path)
+
+    con = sqlite3.connect(path)
+    try:
+        query = f'SELECT fid, id FROM "{table_name}"'
+        df = pd.read_sql_query(query, con)
+    finally:
+        con.close()
+
+    df["fid"] = df["fid"].astype(int)
+    df["id"] = df["id"].astype(int)
+
     return df
 
 
 @st.cache_data(show_spinner=False)
 def load_brussels_map(path: str = MAP_PATH):
+    # Read the spatial layer with GeoPandas.
     gdf = load_gpkg(path).copy()
 
     if gdf.crs is not None and str(gdf.crs).upper() != "EPSG:4326":
         gdf = gdf.to_crs(epsg=4326)
 
-    # Use the built-in fid field from the geo file as the map-side id.
-    if "fid" not in gdf.columns:
-        raise ValueError("The GPKG file must contain a 'fid' column for matching.")
+    if "id" not in gdf.columns:
+        raise ValueError("The GPKG layer must contain an 'id' column.")
+
+    gdf["id"] = gdf["id"].astype(int)
+
+    # Read fid separately from the raw GPKG table and merge it into the GeoDataFrame.
+    fid_map = load_gpkg_fid_mapping(path)
+    gdf = gdf.merge(fid_map, on="id", how="left")
+
+    if "fid" not in gdf.columns or gdf["fid"].isna().any():
+        raise ValueError("Failed to attach 'fid' values from the GPKG file.")
 
     gdf["fid"] = gdf["fid"].astype(int)
+
     return gdf
 
 
@@ -124,21 +173,26 @@ def prepare_three_map_geojson(
     gdf = load_brussels_map().copy()
     meta = load_segments_metadata().copy()
 
-    # Join metadata to the map using: metadata.id - 1 == geo.fid
+    # Join metadata to the map using:
+    # metadata.id - 1 == geo.fid
     meta_for_merge = meta[
         ["map_fid", "segment_name", "bus_lines", "start_name", "end_name"]
     ].copy()
 
     gdf = gdf.merge(meta_for_merge, left_on="fid", right_on="map_fid", how="left")
 
+    # Tooltip fields.
     gdf["segment_name"] = gdf["segment_name"].fillna("N/A")
     gdf["bus_lines_display"] = gdf["bus_lines"].fillna("")
+    gdf["start_name_display"] = gdf["start_name"].fillna("")
+    gdf["end_name_display"] = gdf["end_name"].fillna("")
 
     selected_map_fids = get_selected_map_fids(
         list(selected_segment_names),
         list(selected_bus_ids),
     )
 
+    # Map 1 and Map 2 are colorized entirely when enabled.
     if colorized:
         gdf["bus_speed"] = [float(8 + (i * 5) % 48) for i in range(len(gdf))]
         gdf["est_speed"] = [float(12 + (i * 7) % 42) for i in range(len(gdf))]
@@ -146,12 +200,14 @@ def prepare_three_map_geojson(
         gdf["bus_speed"] = [None] * len(gdf)
         gdf["est_speed"] = [None] * len(gdf)
 
+    # Map 3 is colorized only for selected segments.
     google_speed_values = []
     for i, row in gdf.iterrows():
         if colorized and int(row["fid"]) in selected_map_fids:
             google_speed_values.append(float(10 + (i * 6) % 45))
         else:
             google_speed_values.append(None)
+
     gdf["google_speed"] = google_speed_values
 
     def format_speed(value):
