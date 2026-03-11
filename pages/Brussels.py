@@ -18,7 +18,6 @@ inject_styles()
 settings_box, content_box = render_left_panel("Brussels")
 
 MAP_PATH = "data/Brussels_map_6km.gpkg"
-METADATA_PATH = "data/segments_metadata.csv"
 
 
 if "brussels_colorized" not in st.session_state:
@@ -31,41 +30,17 @@ def parse_bus_lines(value) -> list[str]:
         return []
 
     text = str(value).strip()
+    if not text:
+        return []
 
-    # Extract alphanumeric route tokens robustly.
-    # This works for formats like:
-    # "71, 95"
+    # Supports values such as:
+    # "71"
+    # "13,88"
     # "71;95"
     # "[71, 95]"
-    # "['71', '95']"
+    # "71 95"
     tokens = re.findall(r"[A-Za-z0-9]+", text)
-
-    cleaned = []
-    for token in tokens:
-        token = token.strip()
-        if token:
-            cleaned.append(token)
-
-    return cleaned
-
-
-@st.cache_data(show_spinner=False)
-def load_segments_metadata(path: str = METADATA_PATH) -> pd.DataFrame:
-    df = pd.read_csv(path).copy()
-
-    # CSV id is 1-based.
-    # The map fid-equivalent is treated as the GeoDataFrame row index, which is 0-based.
-    df["map_fid"] = df["id"].astype(int) - 1
-
-    df["segment_name"] = (
-        df["start_name"].fillna("").astype(str).str.strip()
-        + " - "
-        + df["end_name"].fillna("").astype(str).str.strip()
-    )
-
-    df["bus_line_list"] = df["bus_lines"].apply(parse_bus_lines)
-
-    return df
+    return [token.strip() for token in tokens if token.strip()]
 
 
 @st.cache_data(show_spinner=False)
@@ -75,23 +50,23 @@ def load_brussels_map(path: str = MAP_PATH):
     if gdf.crs is not None and str(gdf.crs).upper() != "EPSG:4326":
         gdf = gdf.to_crs(epsg=4326)
 
-    # Use the row index as the fid-equivalent key.
     gdf = gdf.reset_index(drop=True)
+
+    # Use row index as the internal map key.
     gdf["map_fid"] = gdf.index.astype(int)
 
-    # Build tooltip fields directly from the GPKG.
-    if "start_name" not in gdf.columns:
-        gdf["start_name"] = ""
-    if "end_name" not in gdf.columns:
-        gdf["end_name"] = ""
-    if "bus_lines" not in gdf.columns:
-        gdf["bus_lines"] = ""
+    # Make sure expected columns exist.
+    for col in ["start_name", "end_name", "bus_lines"]:
+        if col not in gdf.columns:
+            gdf[col] = ""
 
+    # Build labels directly from the GPKG.
     gdf["segment_name"] = (
         gdf["start_name"].fillna("").astype(str).str.strip()
         + " - "
         + gdf["end_name"].fillna("").astype(str).str.strip()
     )
+
     gdf["segment_name"] = gdf["segment_name"].replace(" - ", "").fillna("N/A")
     gdf["bus_lines_display"] = gdf["bus_lines"].fillna("").astype(str)
     gdf["bus_line_list"] = gdf["bus_lines"].apply(parse_bus_lines)
@@ -101,12 +76,12 @@ def load_brussels_map(path: str = MAP_PATH):
 
 @st.cache_data(show_spinner=False)
 def get_filter_options():
-    meta = load_segments_metadata()
+    gdf = load_brussels_map()
 
     segment_options = sorted(
         [
             value
-            for value in meta["segment_name"].dropna().astype(str).unique().tolist()
+            for value in gdf["segment_name"].dropna().astype(str).unique().tolist()
             if value.strip()
         ]
     )
@@ -114,7 +89,7 @@ def get_filter_options():
     bus_id_options = sorted(
         {
             bus_id
-            for bus_list in meta["bus_line_list"].tolist()
+            for bus_list in gdf["bus_line_list"].tolist()
             for bus_id in bus_list
             if str(bus_id).strip()
         },
@@ -128,27 +103,31 @@ def get_selected_map_fids(
     selected_segment_names: list[str],
     selected_bus_ids: list[str],
 ) -> set[int]:
-    meta = load_segments_metadata().copy()
+    gdf = load_brussels_map().copy()
 
-    selected_segment_names = {str(x).strip() for x in (selected_segment_names or []) if str(x).strip()}
-    selected_bus_ids = {str(x).strip() for x in (selected_bus_ids or []) if str(x).strip()}
+    selected_segment_names = {
+        str(x).strip() for x in (selected_segment_names or []) if str(x).strip()
+    }
+    selected_bus_ids = {
+        str(x).strip() for x in (selected_bus_ids or []) if str(x).strip()
+    }
 
-    mask = pd.Series(False, index=meta.index)
+    mask = pd.Series(False, index=gdf.index)
 
     if selected_segment_names:
-        mask = mask | meta["segment_name"].isin(selected_segment_names)
+        mask = mask | gdf["segment_name"].isin(selected_segment_names)
 
     if selected_bus_ids:
-        mask = mask | meta["bus_line_list"].apply(
+        mask = mask | gdf["bus_line_list"].apply(
             lambda bus_list: any(bus_id in selected_bus_ids for bus_id in bus_list)
         )
 
-    selected_meta = meta.loc[mask].copy()
+    selected_rows = gdf.loc[mask].copy()
 
-    if selected_meta.empty:
+    if selected_rows.empty:
         return set()
 
-    return set(selected_meta["map_fid"].astype(int).tolist())
+    return set(selected_rows["map_fid"].astype(int).tolist())
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
@@ -183,7 +162,6 @@ def prepare_three_map_geojson(
             google_color = get_speed_color(google_speed)
         else:
             google_speed = None
-            # Keep all non-selected segments visible in black on map 3.
             google_color = "#000000"
 
         google_speed_values.append(google_speed)
@@ -208,7 +186,6 @@ def prepare_three_map_geojson(
         lambda value: get_speed_color(value) if value is not None else "#222222"
     )
 
-    # Highlight colors inside tooltips.
     gdf["bus_highlight_color"] = gdf["bus_speed"].apply(
         lambda value: get_speed_color(value) if value is not None else "#222222"
     )
