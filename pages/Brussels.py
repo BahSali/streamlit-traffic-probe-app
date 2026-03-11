@@ -505,7 +505,7 @@ with content_box:
         payload["center_lon"],
     )
 
-    col_map, col_legend = st.columns([5, 1], vertical_alignment="top")
+    col_map, col_legend = st.columns([6, 1], vertical_alignment="top")
 
     with col_map:
         components.html(html, height=640, scrolling=False)
