@@ -283,23 +283,25 @@ def build_three_map_html(geojson_obj, center_lat, center_lon):
     }}
 
     .leaflet-tooltip {{
-      font-size: 13px;
-      padding: 10px 12px;
-      line-height: 1.5;
-      min-width: 220px;
-      max-width: 280px;
+      font-size: 11px;
+      padding: 4px 6px;
+      line-height: 1.25;
+      min-width: 0;
+      max-width: 180px;
       white-space: normal;
       word-break: break-word;
+      margin: 0;
     }}
-
+    
     .metric-highlight {{
       display: inline-block;
       color: #ffffff;
-      padding: 2px 7px;
-      border-radius: 4px;
+      padding: 0px 4px;
+      border-radius: 3px;
       font-weight: 700;
-      margin-left: 4px;
+      margin-left: 2px;
     }}
+
   </style>
 </head>
 <body>
@@ -379,7 +381,11 @@ def build_three_map_html(geojson_obj, center_lat, center_lon):
           <b>Estimated speed:</b> ${{p.est_speed_str ?? 'N/A'}}
         </div>
       `;
-      layer.bindTooltip(html, {{ sticky: true }});
+      layer.bindTooltip(html, {{
+          sticky: true,
+          direction: 'top',
+          offset: [0, -6]
+        }});
     }}
 
     function estimatedTooltip(feature, layer) {{
