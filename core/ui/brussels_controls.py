@@ -38,7 +38,7 @@ def brussels_left_controls(
         )
 
         if has_pending_changes:
-            st.warning("Filters changed. Click 'Colorize network' to apply them to the maps.")
+            st.warning("⚠️ Warning: Filters changed. Click 'Run' to apply changes to the maps.")
 
         st.markdown("---")
 
