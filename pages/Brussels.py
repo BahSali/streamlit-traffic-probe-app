@@ -283,9 +283,13 @@ def build_three_map_html(geojson_obj, center_lat, center_lon):
     }}
 
     .leaflet-tooltip {{
-      font-size: 12px;
-      padding: 6px 8px;
-      line-height: 1.45;
+      font-size: 13px;
+      padding: 10px 12px;
+      line-height: 1.5;
+      min-width: 220px;
+      max-width: 280px;
+      white-space: normal;
+      word-break: break-word;
     }}
 
     .metric-highlight {{
