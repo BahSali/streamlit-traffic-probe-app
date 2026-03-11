@@ -27,19 +27,17 @@ if "brussels_colorized" not in st.session_state:
 def load_segments_metadata(path: str = METADATA_PATH) -> pd.DataFrame:
     df = pd.read_csv(path).copy()
 
-    # The CSV id is 1-based.
-    # The map fid is treated as the GeoDataFrame index, which is 0-based.
-    # Therefore, csv.id - 1 must match gdf.index.
+    # CSV ids are 1-based.
+    # The map fid is treated here as the GeoDataFrame row index, which is 0-based.
     df["map_fid"] = df["id"].astype(int) - 1
 
-    # Human-readable segment name for filters and tooltips.
+    # Segment label used in the left-side filter.
     df["segment_name"] = (
         df["start_name"].fillna("").astype(str).str.strip()
         + " - "
         + df["end_name"].fillna("").astype(str).str.strip()
     )
 
-    # Normalize the bus_lines field into a list of strings.
     def split_bus_lines(value):
         if pd.isna(value):
             return []
@@ -47,7 +45,6 @@ def load_segments_metadata(path: str = METADATA_PATH) -> pd.DataFrame:
         return [item.strip() for item in text.split(",") if item.strip()]
 
     df["bus_line_list"] = df["bus_lines"].apply(split_bus_lines)
-
     return df
 
 
@@ -58,10 +55,17 @@ def load_brussels_map(path: str = MAP_PATH):
     if gdf.crs is not None and str(gdf.crs).upper() != "EPSG:4326":
         gdf = gdf.to_crs(epsg=4326)
 
-    # Keep the GeoDataFrame index as the fid-equivalent key.
-    # Do not use the "id" column for matching.
+    # Keep the row index as the fid-equivalent key.
     gdf = gdf.reset_index(drop=True)
     gdf["map_fid"] = gdf.index.astype(int)
+
+    # Build display fields directly from the GPKG itself.
+    gdf["segment_name"] = (
+        gdf["start_name"].fillna("").astype(str).str.strip()
+        + " - "
+        + gdf["end_name"].fillna("").astype(str).str.strip()
+    )
+    gdf["bus_lines_display"] = gdf["bus_lines"].fillna("").astype(str)
 
     return gdf
 
@@ -128,45 +132,13 @@ def prepare_three_map_geojson(
     selected_bus_ids: tuple[str, ...],
 ):
     gdf = load_brussels_map().copy()
-    meta = load_segments_metadata().copy()
-
-    # Attach metadata using csv.id - 1 == gdf.index (fid-equivalent).
-    meta_for_merge = meta[
-        ["map_fid", "segment_name", "bus_lines", "start_name", "end_name"]
-    ].copy()
-
-    gdf = gdf.merge(meta_for_merge, on="map_fid", how="left", suffixes=("", "_meta"))
-
-    # Build display fields for tooltips.
-    gdf["segment_name"] = gdf["segment_name"].fillna("N/A")
-
-    if "bus_lines_meta" in gdf.columns:
-        gdf["bus_lines_display"] = gdf["bus_lines_meta"].fillna("")
-    elif "bus_lines" in gdf.columns:
-        gdf["bus_lines_display"] = gdf["bus_lines"].fillna("")
-    else:
-        gdf["bus_lines_display"] = ""
-
-    if "start_name_meta" in gdf.columns:
-        gdf["start_name_display"] = gdf["start_name_meta"].fillna("")
-    elif "start_name" in gdf.columns:
-        gdf["start_name_display"] = gdf["start_name"].fillna("")
-    else:
-        gdf["start_name_display"] = ""
-
-    if "end_name_meta" in gdf.columns:
-        gdf["end_name_display"] = gdf["end_name_meta"].fillna("")
-    elif "end_name" in gdf.columns:
-        gdf["end_name_display"] = gdf["end_name"].fillna("")
-    else:
-        gdf["end_name_display"] = ""
 
     selected_map_fids = get_selected_map_fids(
         list(selected_segment_names),
         list(selected_bus_ids),
     )
 
-    # Map 1 and Map 2: color all segments when colorization is enabled.
+    # Map 1 and Map 2: color all segments when enabled.
     if colorized:
         gdf["bus_speed"] = [float(8 + (i * 5) % 48) for i in range(len(gdf))]
         gdf["est_speed"] = [float(12 + (i * 7) % 42) for i in range(len(gdf))]
@@ -174,7 +146,7 @@ def prepare_three_map_geojson(
         gdf["bus_speed"] = [None] * len(gdf)
         gdf["est_speed"] = [None] * len(gdf)
 
-    # Map 3: color only the segments selected by the left-side filters.
+    # Map 3: color only the filtered segments.
     google_speed_values = []
     for _, row in gdf.iterrows():
         if colorized and int(row["map_fid"]) in selected_map_fids:
@@ -207,7 +179,6 @@ def prepare_three_map_geojson(
     center_lon = (minx + maxx) / 2
 
     geojson = json.loads(gdf.to_json())
-
     selected_google_count = int(gdf["google_speed"].notna().sum())
 
     return {
