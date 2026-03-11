@@ -23,6 +23,11 @@ MAP_PATH = "data/Brussels_map_6km.gpkg"
 if "brussels_colorized" not in st.session_state:
     st.session_state["brussels_colorized"] = False
 
+if "brussels_applied_segment_names" not in st.session_state:
+    st.session_state["brussels_applied_segment_names"] = []
+
+if "brussels_applied_bus_ids" not in st.session_state:
+    st.session_state["brussels_applied_bus_ids"] = []
 
 @st.cache_data(show_spinner=False)
 def parse_bus_lines(value) -> list[str]:
@@ -441,13 +446,21 @@ controls = brussels_left_controls(
     settings_box,
     segment_options=segment_options,
     bus_id_options=bus_id_options,
+    applied_segment_names=st.session_state["brussels_applied_segment_names"],
+    applied_bus_ids=st.session_state["brussels_applied_bus_ids"],
 )
 
 if controls["colorize_clicked"]:
+    st.session_state["brussels_applied_segment_names"] = list(controls["filters"]["segment_names"])
+    st.session_state["brussels_applied_bus_ids"] = list(controls["filters"]["bus_ids"])
     st.session_state["brussels_colorized"] = True
 
 if controls["reset_clicked"]:
     st.session_state["brussels_colorized"] = False
+    st.session_state["brussels_applied_segment_names"] = []
+    st.session_state["brussels_applied_bus_ids"] = []
+    st.session_state["bru_seg_names"] = []
+    st.session_state["bru_bus_ids"] = []
 
 
 with content_box:
@@ -457,8 +470,8 @@ with content_box:
     with st.spinner("Loading Brussels map geometry..."):
         payload = prepare_three_map_geojson(
             st.session_state["brussels_colorized"],
-            tuple(controls["filters"]["segment_names"]),
-            tuple(controls["filters"]["bus_ids"]),
+            tuple(st.session_state["brussels_applied_segment_names"]),
+            tuple(st.session_state["brussels_applied_bus_ids"]),
         )
 
     html = build_three_map_html(
