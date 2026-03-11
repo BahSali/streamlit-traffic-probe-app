@@ -29,6 +29,7 @@ if "brussels_applied_segment_names" not in st.session_state:
 if "brussels_applied_bus_ids" not in st.session_state:
     st.session_state["brussels_applied_bus_ids"] = []
 
+
 @st.cache_data(show_spinner=False)
 def parse_bus_lines(value) -> list[str]:
     if pd.isna(value):
@@ -38,12 +39,6 @@ def parse_bus_lines(value) -> list[str]:
     if not text:
         return []
 
-    # Supports values such as:
-    # "71"
-    # "13,88"
-    # "71;95"
-    # "[71, 95]"
-    # "71 95"
     tokens = re.findall(r"[A-Za-z0-9]+", text)
     return [token.strip() for token in tokens if token.strip()]
 
@@ -56,16 +51,12 @@ def load_brussels_map(path: str = MAP_PATH):
         gdf = gdf.to_crs(epsg=4326)
 
     gdf = gdf.reset_index(drop=True)
-
-    # Use row index as the internal map key.
     gdf["map_fid"] = gdf.index.astype(int)
 
-    # Make sure expected columns exist.
     for col in ["start_name", "end_name", "bus_lines"]:
         if col not in gdf.columns:
             gdf[col] = ""
 
-    # Build labels directly from the GPKG.
     gdf["segment_name"] = (
         gdf["start_name"].fillna("").astype(str).str.strip()
         + " - "
@@ -148,7 +139,6 @@ def prepare_three_map_geojson(
         list(selected_bus_ids),
     )
 
-    # Fake speeds for now.
     if colorized:
         gdf["bus_speed"] = [float(8 + (i * 5) % 48) for i in range(len(gdf))]
         gdf["est_speed"] = [float(12 + (i * 7) % 42) for i in range(len(gdf))]
@@ -206,7 +196,9 @@ def prepare_three_map_geojson(
     center_lon = (minx + maxx) / 2
 
     geojson = json.loads(gdf.to_json())
-    selected_google_count = int(sum(fid in selected_map_fids for fid in gdf["map_fid"].tolist()))
+    selected_google_count = int(
+        sum(fid in selected_map_fids for fid in gdf["map_fid"].tolist())
+    )
 
     return {
         "geojson": geojson,
@@ -283,25 +275,30 @@ def build_three_map_html(geojson_obj, center_lat, center_lon):
     }}
 
     .leaflet-tooltip {{
-      font-size: 11px;
-      padding: 4px 6px;
-      line-height: 1.25;
-      min-width: 0;
-      max-width: 180px;
-      white-space: normal;
-      word-break: break-word;
+      padding: 0;
       margin: 0;
+      border-radius: 6px;
     }}
-    
+
+    .leaflet-tooltip-content {{
+      font-size: 12px;
+      line-height: 1.35;
+      margin: 6px 8px;
+      min-width: 180px;
+      max-width: 240px;
+      white-space: normal;
+      word-break: normal;
+      overflow-wrap: break-word;
+    }}
+
     .metric-highlight {{
       display: inline-block;
       color: #ffffff;
-      padding: 0px 4px;
-      border-radius: 3px;
+      padding: 1px 5px;
+      border-radius: 4px;
       font-weight: 700;
-      margin-left: 2px;
+      margin-left: 3px;
     }}
-
   </style>
 </head>
 <body>
@@ -382,10 +379,11 @@ def build_three_map_html(geojson_obj, center_lat, center_lon):
         </div>
       `;
       layer.bindTooltip(html, {{
-          sticky: true,
-          direction: 'top',
-          offset: [0, -6]
-        }});
+        sticky: true,
+        direction: 'top',
+        offset: [0, -8],
+        opacity: 0.95
+      }});
     }}
 
     function estimatedTooltip(feature, layer) {{
@@ -402,7 +400,12 @@ def build_three_map_html(geojson_obj, center_lat, center_lon):
           </span>
         </div>
       `;
-      layer.bindTooltip(html, {{ sticky: true }});
+      layer.bindTooltip(html, {{
+        sticky: true,
+        direction: 'top',
+        offset: [0, -8],
+        opacity: 0.95
+      }});
     }}
 
     function googleTooltip(feature, layer) {{
@@ -420,7 +423,12 @@ def build_three_map_html(geojson_obj, center_lat, center_lon):
           </span>
         </div>
       `;
-      layer.bindTooltip(html, {{ sticky: true }});
+      layer.bindTooltip(html, {{
+        sticky: true,
+        direction: 'top',
+        offset: [0, -8],
+        opacity: 0.95
+      }});
     }}
 
     const layer1 = L.geoJSON(data, {{
@@ -462,8 +470,12 @@ controls = brussels_left_controls(
 )
 
 if controls["colorize_clicked"]:
-    st.session_state["brussels_applied_segment_names"] = list(controls["filters"]["segment_names"])
-    st.session_state["brussels_applied_bus_ids"] = list(controls["filters"]["bus_ids"])
+    st.session_state["brussels_applied_segment_names"] = list(
+        controls["filters"]["segment_names"]
+    )
+    st.session_state["brussels_applied_bus_ids"] = list(
+        controls["filters"]["bus_ids"]
+    )
     st.session_state["brussels_colorized"] = True
 
 if controls["reset_clicked"]:
@@ -476,7 +488,9 @@ if controls["reset_clicked"]:
 
 with content_box:
     st.markdown("<h2 style='color:#009688;'>Brussels</h2>", unsafe_allow_html=True)
-    st.caption("Three synced maps for bus-derived, model-derived, and Google-derived speed comparison.")
+    st.caption(
+        "Three synced maps for bus-derived, model-derived, and Google-derived speed comparison."
+    )
 
     with st.spinner("Loading Brussels map geometry..."):
         payload = prepare_three_map_geojson(
