@@ -295,9 +295,10 @@ def build_three_map_html(geojson_obj, center_lat, center_lon):
     .metric-highlight {{
       display: inline-block;
       color: #ffffff;
-      padding: 1px 6px;
+      padding: 2px 7px;
       border-radius: 4px;
       font-weight: 700;
+      margin-left: 4px;
     }}
   </style>
 </head>
