@@ -176,17 +176,26 @@ def prepare_three_map_geojson(
     # Join metadata to the map using:
     # metadata.id - 1 == geo.fid
     meta_for_merge = meta[
-        ["map_fid", "segment_name", "bus_lines", "start_name", "end_name"]
+    ["map_fid", "segment_name", "bus_lines", "start_name", "end_name"]
     ].copy()
-
+    
+    # Rename metadata fields before merging to avoid column name collisions.
+    meta_for_merge = meta_for_merge.rename(
+        columns={
+            "segment_name": "meta_segment_name",
+            "bus_lines": "meta_bus_lines",
+            "start_name": "meta_start_name",
+            "end_name": "meta_end_name",
+        }
+    )
+    
     gdf = gdf.merge(meta_for_merge, left_on="fid", right_on="map_fid", how="left")
-
-    # Tooltip fields.
-    gdf["segment_name"] = gdf["segment_name"].fillna("N/A")
-    gdf["bus_lines_display"] = gdf["bus_lines"].fillna("")
-    gdf["start_name_display"] = gdf["start_name"].fillna("")
-    gdf["end_name_display"] = gdf["end_name"].fillna("")
-
+    
+    # Tooltip fields always come from metadata.
+    gdf["segment_name_display"] = gdf["meta_segment_name"].fillna("N/A")
+    gdf["bus_lines_display"] = gdf["meta_bus_lines"].fillna("")
+    gdf["start_name_display"] = gdf["meta_start_name"].fillna("")
+    gdf["end_name_display"] = gdf["meta_end_name"].fillna("")
     selected_map_fids = get_selected_map_fids(
         list(selected_segment_names),
         list(selected_bus_ids),
@@ -380,29 +389,29 @@ def build_three_map_html(geojson_obj, center_lat, center_lon):
       }};
     }}
 
-    function busTooltip(feature, layer) {{
-      const p = feature.properties || {{}};
+    function busTooltip(feature, layer) {
+      const p = feature.properties || {};
       const html = `
         <div>
-          <b>Segment:</b> ${{p.segment_name ?? 'N/A'}}<br>
-          <b>Bus lines:</b> ${{p.bus_lines_display ?? ''}}<br>
-          <b>Bus speed:</b> ${{p.bus_speed_str ?? ''}}
+          <b>Segment:</b> ${p.segment_name_display ?? 'N/A'}<br>
+          <b>Bus lines:</b> ${p.bus_lines_display ?? ''}<br>
+          <b>Bus speed:</b> ${p.bus_speed_str ?? ''}
         </div>
       `;
-      layer.bindTooltip(html, {{ sticky: true }});
-    }}
-
-    function estimatedTooltip(feature, layer) {{
-      const p = feature.properties || {{}};
+      layer.bindTooltip(html, { sticky: true });
+    }
+    
+    function estimatedTooltip(feature, layer) {
+      const p = feature.properties || {};
       const html = `
         <div>
-          <b>Segment:</b> ${{p.segment_name ?? 'N/A'}}<br>
-          <b>Bus lines:</b> ${{p.bus_lines_display ?? ''}}<br>
-          <b>Estimated speed:</b> ${{p.est_speed_str ?? ''}}
+          <b>Segment:</b> ${p.segment_name_display ?? 'N/A'}<br>
+          <b>Bus lines:</b> ${p.bus_lines_display ?? ''}<br>
+          <b>Estimated speed:</b> ${p.est_speed_str ?? ''}
         </div>
       `;
-      layer.bindTooltip(html, {{ sticky: true }});
-    }}
+      layer.bindTooltip(html, { sticky: true });
+    }
 
     const layer1 = L.geoJSON(data, {{
       style: styleFactory('bus_color'),
