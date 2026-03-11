@@ -37,7 +37,7 @@ def brussels_left_controls(
             or selected_bus_ids != applied_bus_ids
         )
 
-        if has_pending_changes:
+        if has_pending_changes and not colorize:
             st.warning("Filters changed. Click 'Colorize network' to apply them to the maps.")
 
         st.markdown("---")
