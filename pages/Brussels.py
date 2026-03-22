@@ -53,7 +53,7 @@ def parse_bus_lines(value) -> list[str]:
 @st.cache_data(show_spinner=False)
 def load_brussels_map(path: str = MAP_PATH):
     """
-    Load the Brussels map geometry and prepare UI-friendly helper columns.
+    Load the Brussels map geometry and prepare helper columns for UI and mapping.
     """
     gdf = load_gpkg(path).copy()
 
@@ -113,7 +113,7 @@ def get_selected_map_fids(
     selected_bus_ids: list[str],
 ) -> set[int]:
     """
-    Resolve selected segment names and bus IDs to the map feature IDs.
+    Resolve the selected segment names and bus IDs to map feature IDs.
     """
     gdf = load_brussels_map().copy()
 
@@ -149,50 +149,8 @@ def get_selected_map_fids(
 def get_live_stib_token() -> str | None:
     """
     Read the MobilityTwin token from Streamlit secrets.
-
-    Returns None if the token is not configured.
     """
     return st.secrets.get(STIB_SECRET_KEY)
-
-
-def attach_live_stib_bus_speeds(gdf: pd.DataFrame) -> pd.DataFrame:
-    """
-    Attach live STIB segment speeds to the map GeoDataFrame.
-
-    This function maps:
-    - segment_id from the live STIB snapshot
-    to
-    - the geometry rows of the Brussels map
-
-    If the live source is unavailable or the token is missing, bus_speed remains empty.
-    """
-    result = gdf.copy()
-
-    result["bus_speed"] = pd.NA
-    result["bus_sample_count"] = pd.NA
-    result["bus_snapshot_time"] = pd.NA
-
-    token = get_live_stib_token()
-    if not token:
-        return result
-
-    try:
-        speed_lookup = load_live_stib_segment_speed_lookup(
-            token=token,
-            gpkg_path=STIB_SEGMENT_GPKG_PATH,
-        )
-    except Exception:
-        return result
-
-    # The map geometry file is expected to contain the segment identifier in the "id" column.
-    # The live STIB lookup uses string keys, so the join key is normalized here.
-    if "id" not in result.columns:
-        return result
-
-    result["segment_id_str"] = result["id"].astype(str)
-    result["bus_speed"] = result["segment_id_str"].map(speed_lookup)
-
-    return result
 
 
 def format_speed(value) -> str:
@@ -205,14 +163,11 @@ def format_speed(value) -> str:
     return f"{float(value):.1f} km/h"
 
 
-def build_bus_color(value) -> str:
+def build_dark_fallback_color(_: object = None) -> str:
     """
-    Return the display color for STIB bus speed values.
+    Return the default fallback color for missing data.
     """
-    if value is None or pd.isna(value):
-        return "#222222"
-
-    return get_speed_color(float(value))
+    return "#222222"
 
 
 def build_google_color(value) -> str:
@@ -223,6 +178,67 @@ def build_google_color(value) -> str:
         return "#000000"
 
     return get_speed_color(float(value))
+
+
+def attach_live_stib_bus_speeds(gdf: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """
+    Attach live STIB bus speeds to the Brussels map GeoDataFrame.
+
+    Returns
+    -------
+    tuple[pd.DataFrame, dict]
+        - The updated GeoDataFrame
+        - A small diagnostics dictionary for on-screen debugging
+    """
+    result = gdf.copy()
+
+    diagnostics = {
+        "token_found": False,
+        "map_has_id_column": "id" in result.columns,
+        "lookup_size": 0,
+        "common_segment_ids": 0,
+        "matched_segments": 0,
+        "error_message": None,
+    }
+
+    result["bus_speed"] = pd.NA
+
+    token = get_live_stib_token()
+    if not token:
+        diagnostics["error_message"] = (
+            "Missing MobilityTwin token in Streamlit secrets."
+        )
+        return result, diagnostics
+
+    diagnostics["token_found"] = True
+
+    if "id" not in result.columns:
+        diagnostics["error_message"] = (
+            "The Brussels map file does not contain an 'id' column."
+        )
+        return result, diagnostics
+
+    try:
+        speed_lookup = load_live_stib_segment_speed_lookup(
+            token=token,
+            gpkg_path=STIB_SEGMENT_GPKG_PATH,
+        )
+    except Exception as exc:
+        diagnostics["error_message"] = f"Live STIB data could not be loaded: {exc}"
+        return result, diagnostics
+
+    diagnostics["lookup_size"] = len(speed_lookup)
+
+    result["segment_id_str"] = result["id"].astype(str)
+    map_segment_ids = set(result["segment_id_str"].tolist())
+    lookup_segment_ids = set(speed_lookup.keys())
+
+    diagnostics["common_segment_ids"] = len(map_segment_ids.intersection(lookup_segment_ids))
+
+    result["bus_speed"] = result["segment_id_str"].map(speed_lookup)
+    diagnostics["matched_segments"] = int(result["bus_speed"].notna().sum())
+
+    return result, diagnostics
 
 
 @st.cache_data(show_spinner=False, ttl=90)
@@ -248,9 +264,7 @@ def prepare_three_map_geojson(
         list(selected_bus_ids),
     )
 
-    # Map 1: attach live STIB speeds regardless of the UI colorize flag.
-    # The "colorize" toggle is still used for the other two prototype maps.
-    gdf = attach_live_stib_bus_speeds(gdf)
+    gdf, diagnostics = attach_live_stib_bus_speeds(gdf)
 
     if colorized:
         gdf["est_speed"] = [float(12 + (index * 7) % 42) for index in range(len(gdf))]
@@ -280,11 +294,27 @@ def prepare_three_map_geojson(
     gdf["est_speed_str"] = gdf["est_speed"].apply(format_speed)
     gdf["google_speed_str"] = gdf["google_speed"].apply(format_speed)
 
-    gdf["bus_color"] = gdf["bus_speed"].apply(build_bus_color)
-    gdf["est_color"] = gdf["est_speed"].apply(build_bus_color)
+    gdf["bus_color"] = gdf["bus_speed"].apply(
+        lambda value: get_speed_color(float(value))
+        if value is not None and not pd.isna(value)
+        else build_dark_fallback_color()
+    )
+    gdf["est_color"] = gdf["est_speed"].apply(
+        lambda value: get_speed_color(float(value))
+        if value is not None and not pd.isna(value)
+        else build_dark_fallback_color()
+    )
 
-    gdf["bus_highlight_color"] = gdf["bus_speed"].apply(build_bus_color)
-    gdf["est_highlight_color"] = gdf["est_speed"].apply(build_bus_color)
+    gdf["bus_highlight_color"] = gdf["bus_speed"].apply(
+        lambda value: get_speed_color(float(value))
+        if value is not None and not pd.isna(value)
+        else build_dark_fallback_color()
+    )
+    gdf["est_highlight_color"] = gdf["est_speed"].apply(
+        lambda value: get_speed_color(float(value))
+        if value is not None and not pd.isna(value)
+        else build_dark_fallback_color()
+    )
     gdf["google_highlight_color"] = gdf["google_speed"].apply(build_google_color)
 
     minx, miny, maxx, maxy = gdf.total_bounds
@@ -295,7 +325,6 @@ def prepare_three_map_geojson(
     selected_google_count = int(
         sum(map_fid in selected_map_fids for map_fid in gdf["map_fid"].tolist())
     )
-
     live_bus_count = int(gdf["bus_speed"].notna().sum())
 
     return {
@@ -305,6 +334,7 @@ def prepare_three_map_geojson(
         "selected_google_count": selected_google_count,
         "segment_count": len(gdf),
         "live_bus_count": live_bus_count,
+        "diagnostics": diagnostics,
     }
 
 
@@ -579,13 +609,13 @@ if controls["colorize_clicked"]:
         controls["filters"]["bus_ids"]
     )
     st.session_state["brussels_colorized"] = True
+    st.rerun()
 
 if controls["reset_clicked"]:
     st.session_state["brussels_colorized"] = False
     st.session_state["brussels_applied_segment_names"] = []
     st.session_state["brussels_applied_bus_ids"] = []
-    st.session_state["bru_seg_names"] = []
-    st.session_state["bru_bus_ids"] = []
+    st.rerun()
 
 
 with content_box:
@@ -600,6 +630,20 @@ with content_box:
             tuple(st.session_state["brussels_applied_segment_names"]),
             tuple(st.session_state["brussels_applied_bus_ids"]),
         )
+
+    diagnostics = payload["diagnostics"]
+
+    if diagnostics["error_message"]:
+        st.warning(diagnostics["error_message"])
+
+    st.caption(
+        "Live STIB diagnostics — "
+        f"token: {'yes' if diagnostics['token_found'] else 'no'}, "
+        f"map has id: {'yes' if diagnostics['map_has_id_column'] else 'no'}, "
+        f"lookup size: {diagnostics['lookup_size']}, "
+        f"common segment ids: {diagnostics['common_segment_ids']}, "
+        f"matched segments: {diagnostics['matched_segments']}"
+    )
 
     html = build_three_map_html(
         payload["geojson"],
