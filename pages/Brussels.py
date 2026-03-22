@@ -20,7 +20,7 @@ inject_styles()
 settings_box, content_box = render_left_panel("Brussels")
 
 MAP_PATH = "data/Brussels_map_6km.gpkg"
-STIB_SEGMENT_GPKG_PATH = "Map_QGIS/filtered_map_6km.gpkg"
+STIB_SEGMENT_GPKG_PATH = MAP_PATH
 STIB_SECRET_KEY = "MOBILITY_TWIN_TOKEN"
 
 
