@@ -6,11 +6,6 @@ import requests
 import streamlit as st
 from shapely.geometry import shape
 
-from core.stib_live import (
-    build_segment_speed_lookup,
-    fetch_live_segment_speeds,
-)
-
 
 @st.cache_data(show_spinner=False)
 def load_csv(path: str, sep: str = ";") -> pd.DataFrame:
@@ -32,9 +27,6 @@ def load_gpkg(path: str) -> gpd.GeoDataFrame:
 def fetch_stib_shapefile(token: str) -> gpd.GeoDataFrame:
     """
     Fetch the STIB shapefile data from the MobilityTwin API.
-
-    The result is cached for one hour because the geometry layer is relatively
-    stable compared to live speed data.
     """
     url = "https://api.mobilitytwin.brussels/stib/shapefile"
     headers = {"Authorization": f"Bearer {token}"}
@@ -43,7 +35,6 @@ def fetch_stib_shapefile(token: str) -> gpd.GeoDataFrame:
     response.raise_for_status()
 
     data = response.json()
-
     geometries = [shape(feature["geometry"]) for feature in data["features"]]
     properties_df = pd.DataFrame(
         [feature["properties"] for feature in data["features"]]
@@ -59,27 +50,16 @@ def load_live_stib_segment_speeds(
 ) -> pd.DataFrame:
     """
     Load live STIB speeds aggregated to segment level.
-
-    This function uses the live MobilityTwin speed endpoint, maps point-level
-    speeds to segment IDs using the provided GPKG file, and returns a
-    segment-level snapshot.
-
-    Parameters
-    ----------
-    token : str
-        MobilityTwin API token.
-    gpkg_path : str
-        Path to the GPKG file containing the segment metadata.
-
-    Returns
-    -------
-    pd.DataFrame
-        Columns:
-        - snapshot_time
-        - segment_id
-        - avg_speed_kmh
-        - sample_count
     """
+    try:
+        from core.stib_live import fetch_live_segment_speeds
+    except ImportError as exc:
+        raise ImportError(
+            "Could not import 'core.stib_live'. "
+            "Make sure the file 'core/stib_live.py' exists in the repository "
+            "and is deployed to Streamlit Cloud."
+        ) from exc
+
     return fetch_live_segment_speeds(
         token=token,
         gpkg_path=gpkg_path,
@@ -92,25 +72,17 @@ def load_live_stib_segment_speed_lookup(
     gpkg_path: str,
 ) -> dict[str, float]:
     """
-    Load live STIB segment speeds as a lookup dictionary.
-
-    This is the most convenient format for mapping speeds onto a GeoDataFrame
-    used by the Streamlit map.
-
-    Parameters
-    ----------
-    token : str
-        MobilityTwin API token.
-    gpkg_path : str
-        Path to the GPKG file containing the segment metadata.
-
-    Returns
-    -------
-    dict[str, float]
-        Mapping:
-        - key   -> segment_id as string
-        - value -> avg_speed_kmh
+    Load live STIB segment speeds as a segment_id -> avg_speed_kmh lookup.
     """
+    try:
+        from core.stib_live import build_segment_speed_lookup
+    except ImportError as exc:
+        raise ImportError(
+            "Could not import 'core.stib_live'. "
+            "Make sure the file 'core/stib_live.py' exists in the repository "
+            "and is deployed to Streamlit Cloud."
+        ) from exc
+
     snapshot_df = load_live_stib_segment_speeds(
         token=token,
         gpkg_path=gpkg_path,
