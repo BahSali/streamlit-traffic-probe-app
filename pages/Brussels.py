@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import re
 
@@ -5,10 +7,10 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-from core.styles import inject_styles
 from core.colors import get_speed_color, legend_html
-from core.data_sources import load_gpkg
+from core.data_sources import load_gpkg, load_live_stib_segment_speed_lookup
 from core.nav_panel import render_left_panel
+from core.styles import inject_styles
 from core.ui.brussels_controls import brussels_left_controls
 
 
@@ -18,6 +20,8 @@ inject_styles()
 settings_box, content_box = render_left_panel("Brussels")
 
 MAP_PATH = "data/Brussels_map_6km.gpkg"
+STIB_SEGMENT_GPKG_PATH = "Map_QGIS/filtered_map_6km.gpkg"
+STIB_SECRET_KEY = "MOBILITY_TWIN_TOKEN"
 
 
 if "brussels_colorized" not in st.session_state:
@@ -32,6 +36,9 @@ if "brussels_applied_bus_ids" not in st.session_state:
 
 @st.cache_data(show_spinner=False)
 def parse_bus_lines(value) -> list[str]:
+    """
+    Parse a bus line string into a normalized list of line identifiers.
+    """
     if pd.isna(value):
         return []
 
@@ -45,6 +52,9 @@ def parse_bus_lines(value) -> list[str]:
 
 @st.cache_data(show_spinner=False)
 def load_brussels_map(path: str = MAP_PATH):
+    """
+    Load the Brussels map geometry and prepare UI-friendly helper columns.
+    """
     gdf = load_gpkg(path).copy()
 
     if gdf.crs is not None and str(gdf.crs).upper() != "EPSG:4326":
@@ -53,17 +63,17 @@ def load_brussels_map(path: str = MAP_PATH):
     gdf = gdf.reset_index(drop=True)
     gdf["map_fid"] = gdf.index.astype(int)
 
-    for col in ["start_name", "end_name", "bus_lines"]:
-        if col not in gdf.columns:
-            gdf[col] = ""
+    for column in ["start_name", "end_name", "bus_lines"]:
+        if column not in gdf.columns:
+            gdf[column] = ""
 
     gdf["segment_name"] = (
         gdf["start_name"].fillna("").astype(str).str.strip()
         + " - "
         + gdf["end_name"].fillna("").astype(str).str.strip()
     )
-
     gdf["segment_name"] = gdf["segment_name"].replace(" - ", "").fillna("N/A")
+
     gdf["bus_lines_display"] = gdf["bus_lines"].fillna("").astype(str)
     gdf["bus_line_list"] = gdf["bus_lines"].apply(parse_bus_lines)
 
@@ -72,6 +82,9 @@ def load_brussels_map(path: str = MAP_PATH):
 
 @st.cache_data(show_spinner=False)
 def get_filter_options():
+    """
+    Build filter options for the left control panel.
+    """
     gdf = load_brussels_map()
 
     segment_options = sorted(
@@ -89,7 +102,7 @@ def get_filter_options():
             for bus_id in bus_list
             if str(bus_id).strip()
         },
-        key=lambda x: (len(str(x)), str(x)),
+        key=lambda value: (len(str(value)), str(value)),
     )
 
     return segment_options, bus_id_options
@@ -99,13 +112,20 @@ def get_selected_map_fids(
     selected_segment_names: list[str],
     selected_bus_ids: list[str],
 ) -> set[int]:
+    """
+    Resolve selected segment names and bus IDs to the map feature IDs.
+    """
     gdf = load_brussels_map().copy()
 
     selected_segment_names = {
-        str(x).strip() for x in (selected_segment_names or []) if str(x).strip()
+        str(value).strip()
+        for value in (selected_segment_names or [])
+        if str(value).strip()
     }
     selected_bus_ids = {
-        str(x).strip() for x in (selected_bus_ids or []) if str(x).strip()
+        str(value).strip()
+        for value in (selected_bus_ids or [])
+        if str(value).strip()
     }
 
     mask = pd.Series(False, index=gdf.index)
@@ -126,12 +146,101 @@ def get_selected_map_fids(
     return set(selected_rows["map_fid"].astype(int).tolist())
 
 
-@st.cache_data(show_spinner=False, ttl=3600)
+def get_live_stib_token() -> str | None:
+    """
+    Read the MobilityTwin token from Streamlit secrets.
+
+    Returns None if the token is not configured.
+    """
+    return st.secrets.get(STIB_SECRET_KEY)
+
+
+def attach_live_stib_bus_speeds(gdf: pd.DataFrame) -> pd.DataFrame:
+    """
+    Attach live STIB segment speeds to the map GeoDataFrame.
+
+    This function maps:
+    - segment_id from the live STIB snapshot
+    to
+    - the geometry rows of the Brussels map
+
+    If the live source is unavailable or the token is missing, bus_speed remains empty.
+    """
+    result = gdf.copy()
+
+    result["bus_speed"] = pd.NA
+    result["bus_sample_count"] = pd.NA
+    result["bus_snapshot_time"] = pd.NA
+
+    token = get_live_stib_token()
+    if not token:
+        return result
+
+    try:
+        speed_lookup = load_live_stib_segment_speed_lookup(
+            token=token,
+            gpkg_path=STIB_SEGMENT_GPKG_PATH,
+        )
+    except Exception:
+        return result
+
+    # The map geometry file is expected to contain the segment identifier in the "id" column.
+    # The live STIB lookup uses string keys, so the join key is normalized here.
+    if "id" not in result.columns:
+        return result
+
+    result["segment_id_str"] = result["id"].astype(str)
+    result["bus_speed"] = result["segment_id_str"].map(speed_lookup)
+
+    return result
+
+
+def format_speed(value) -> str:
+    """
+    Format a numeric speed value for display.
+    """
+    if value is None or pd.isna(value):
+        return "N/A"
+
+    return f"{float(value):.1f} km/h"
+
+
+def build_bus_color(value) -> str:
+    """
+    Return the display color for STIB bus speed values.
+    """
+    if value is None or pd.isna(value):
+        return "#222222"
+
+    return get_speed_color(float(value))
+
+
+def build_google_color(value) -> str:
+    """
+    Return the display color for Google-derived speed values.
+    """
+    if value is None or pd.isna(value):
+        return "#000000"
+
+    return get_speed_color(float(value))
+
+
+@st.cache_data(show_spinner=False, ttl=90)
 def prepare_three_map_geojson(
     colorized: bool,
     selected_segment_names: tuple[str, ...],
     selected_bus_ids: tuple[str, ...],
 ):
+    """
+    Build the GeoJSON payload used by the three synchronized maps.
+
+    Map 1:
+        Live STIB bus-derived speeds
+    Map 2:
+        Placeholder model-derived street speed estimates
+    Map 3:
+        Placeholder Google Routes API-derived speed proxy
+    """
     gdf = load_brussels_map().copy()
 
     selected_map_fids = get_selected_map_fids(
@@ -139,21 +248,23 @@ def prepare_three_map_geojson(
         list(selected_bus_ids),
     )
 
+    # Map 1: attach live STIB speeds regardless of the UI colorize flag.
+    # The "colorize" toggle is still used for the other two prototype maps.
+    gdf = attach_live_stib_bus_speeds(gdf)
+
     if colorized:
-        gdf["bus_speed"] = [float(8 + (i * 5) % 48) for i in range(len(gdf))]
-        gdf["est_speed"] = [float(12 + (i * 7) % 42) for i in range(len(gdf))]
+        gdf["est_speed"] = [float(12 + (index * 7) % 42) for index in range(len(gdf))]
     else:
-        gdf["bus_speed"] = [None] * len(gdf)
         gdf["est_speed"] = [None] * len(gdf)
 
     google_speed_values = []
     google_color_values = []
 
     for _, row in gdf.iterrows():
-        fid = int(row["map_fid"])
+        map_fid = int(row["map_fid"])
 
-        if colorized and fid in selected_map_fids:
-            google_speed = float(10 + (fid * 6) % 45)
+        if colorized and map_fid in selected_map_fids:
+            google_speed = float(10 + (map_fid * 6) % 45)
             google_color = get_speed_color(google_speed)
         else:
             google_speed = None
@@ -165,31 +276,16 @@ def prepare_three_map_geojson(
     gdf["google_speed"] = google_speed_values
     gdf["google_color"] = google_color_values
 
-    def format_speed(value):
-        if value is None or pd.isna(value):
-            return "N/A"
-        return f"{float(value):.1f} km/h"
-
     gdf["bus_speed_str"] = gdf["bus_speed"].apply(format_speed)
     gdf["est_speed_str"] = gdf["est_speed"].apply(format_speed)
     gdf["google_speed_str"] = gdf["google_speed"].apply(format_speed)
 
-    gdf["bus_color"] = gdf["bus_speed"].apply(
-        lambda value: get_speed_color(value) if value is not None else "#222222"
-    )
-    gdf["est_color"] = gdf["est_speed"].apply(
-        lambda value: get_speed_color(value) if value is not None else "#222222"
-    )
+    gdf["bus_color"] = gdf["bus_speed"].apply(build_bus_color)
+    gdf["est_color"] = gdf["est_speed"].apply(build_bus_color)
 
-    gdf["bus_highlight_color"] = gdf["bus_speed"].apply(
-        lambda value: get_speed_color(value) if value is not None else "#222222"
-    )
-    gdf["est_highlight_color"] = gdf["est_speed"].apply(
-        lambda value: get_speed_color(value) if value is not None else "#222222"
-    )
-    gdf["google_highlight_color"] = gdf["google_speed"].apply(
-        lambda value: get_speed_color(value) if value is not None else "#000000"
-    )
+    gdf["bus_highlight_color"] = gdf["bus_speed"].apply(build_bus_color)
+    gdf["est_highlight_color"] = gdf["est_speed"].apply(build_bus_color)
+    gdf["google_highlight_color"] = gdf["google_speed"].apply(build_google_color)
 
     minx, miny, maxx, maxy = gdf.total_bounds
     center_lat = (miny + maxy) / 2
@@ -197,8 +293,10 @@ def prepare_three_map_geojson(
 
     geojson = json.loads(gdf.to_json())
     selected_google_count = int(
-        sum(fid in selected_map_fids for fid in gdf["map_fid"].tolist())
+        sum(map_fid in selected_map_fids for map_fid in gdf["map_fid"].tolist())
     )
+
+    live_bus_count = int(gdf["bus_speed"].notna().sum())
 
     return {
         "geojson": geojson,
@@ -206,10 +304,14 @@ def prepare_three_map_geojson(
         "center_lon": center_lon,
         "selected_google_count": selected_google_count,
         "segment_count": len(gdf),
+        "live_bus_count": live_bus_count,
     }
 
 
 def build_three_map_html(geojson_obj, center_lat, center_lon):
+    """
+    Build the HTML for the three synchronized Leaflet maps.
+    """
     geojson_str = json.dumps(geojson_obj)
 
     html = f"""
@@ -516,7 +618,8 @@ with content_box:
     st.markdown("---")
     st.markdown("### Overview")
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     col1.metric("Colorized", "Yes" if st.session_state["brussels_colorized"] else "No")
     col2.metric("Google-colored segments", payload["selected_google_count"])
     col3.metric("Map segments", payload["segment_count"])
+    col4.metric("Live STIB segments", payload["live_bus_count"])
