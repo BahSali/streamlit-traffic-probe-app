@@ -43,7 +43,7 @@ def brussels_left_controls(
         st.markdown("---")
 
         colorize = st.button(
-            "Colorize network",
+            "RUN",
             use_container_width=True,
             key="bru_colorize_btn",
         )
