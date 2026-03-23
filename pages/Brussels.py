@@ -20,7 +20,6 @@ inject_styles()
 settings_box, content_box = render_left_panel("Brussels")
 
 MAP_PATH = "data/Brussels_map_6km.gpkg"
-STIB_SEGMENT_GPKG_PATH = MAP_PATH
 STIB_SECRET_KEY = "MOBILITY_TWIN_TOKEN"
 
 
@@ -223,7 +222,7 @@ def attach_live_stib_bus_speeds(gdf: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     try:
         speed_lookup = load_live_stib_segment_speed_lookup(
             token=token,
-            gpkg_path=STIB_SEGMENT_GPKG_PATH,
+            gpkg_path=MAP_PATH,
         )
     except Exception as exc:
         diagnostics["error_message"] = f"Live STIB data could not be loaded: {exc}"
