@@ -33,6 +33,8 @@ if "brussels_applied_segment_names" not in st.session_state:
 if "brussels_applied_bus_ids" not in st.session_state:
     st.session_state["brussels_applied_bus_ids"] = []
 
+if "brussels_refresh_key" not in st.session_state:
+    st.session_state["brussels_refresh_key"] = 0
 
 @st.cache_data(show_spinner=False)
 def parse_bus_lines(value) -> list[str]:
@@ -246,6 +248,7 @@ def prepare_three_map_geojson(
     colorized: bool,
     selected_segment_names: tuple[str, ...],
     selected_bus_ids: tuple[str, ...],
+    refresh_key: int,
 ):
     """
     Build the GeoJSON payload used by the three synchronized maps.
@@ -264,11 +267,19 @@ def prepare_three_map_geojson(
         list(selected_bus_ids),
     )
 
-    gdf, diagnostics = attach_live_stib_bus_speeds(gdf)
-
     if colorized:
+        gdf, diagnostics = attach_live_stib_bus_speeds(gdf)
         gdf["est_speed"] = [float(12 + (index * 7) % 42) for index in range(len(gdf))]
     else:
+        diagnostics = {
+            "token_found": False,
+            "map_has_id_column": "id" in gdf.columns,
+            "lookup_size": 0,
+            "common_segment_ids": 0,
+            "matched_segments": 0,
+            "error_message": None,
+        }
+        gdf["bus_speed"] = pd.NA
         gdf["est_speed"] = [None] * len(gdf)
 
     google_speed_values = []
@@ -609,12 +620,14 @@ if controls["colorize_clicked"]:
         controls["filters"]["bus_ids"]
     )
     st.session_state["brussels_colorized"] = True
+    st.session_state["brussels_refresh_key"] += 1
     st.rerun()
 
 if controls["reset_clicked"]:
     st.session_state["brussels_colorized"] = False
     st.session_state["brussels_applied_segment_names"] = []
     st.session_state["brussels_applied_bus_ids"] = []
+    st.session_state["brussels_refresh_key"] += 1
     st.rerun()
 
 
@@ -629,6 +642,7 @@ with content_box:
             st.session_state["brussels_colorized"],
             tuple(st.session_state["brussels_applied_segment_names"]),
             tuple(st.session_state["brussels_applied_bus_ids"]),
+            st.session_state["brussels_refresh_key"],
         )
 
     diagnostics = payload["diagnostics"]
