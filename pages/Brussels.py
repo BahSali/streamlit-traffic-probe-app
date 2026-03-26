@@ -694,20 +694,20 @@ with content_box:
 
     with col_map:
         components.html(html, height=640, scrolling=False)
-    
-    if (
-        st.session_state["brussels_colorized"]
-        and not completed_snapshot_df.empty
-    ):
-        st.download_button(
-            label="Download completed STIB snapshot",
-            data=convert_dataframe_to_csv_bytes(completed_snapshot_df),
-            file_name="completed_stib_snapshot.csv",
-            mime="text/csv",
-        )
-        
+
     with col_legend:
         st.markdown(legend_html(), unsafe_allow_html=True)
+
+    st.markdown("### Results")
+
+    if st.session_state["brussels_colorized"] and not completed_snapshot_df.empty:
+        st.download_button(
+            label="Download current results",
+            data=convert_dataframe_to_csv_bytes(completed_snapshot_df),
+            file_name="current_results.csv",
+            mime="text/csv",
+            use_container_width=False,
+        )
 
     st.markdown("---")
     st.markdown("### Overview")
