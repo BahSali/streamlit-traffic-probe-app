@@ -6,12 +6,12 @@ from core.stib_historical import fetch_historical_segment_speeds
 from core.stib_live import fetch_live_segment_speeds
 
 
-def build_historical_fill_values(
+def build_interpolated_values(
     historical_segment_df: pd.DataFrame,
     method: str = "latest",
 ) -> pd.DataFrame:
     """
-    Build one historical fallback value per segment.
+    Build one interpolated value per segment from the historical time series.
 
     Parameters
     ----------
@@ -21,9 +21,10 @@ def build_historical_fill_values(
         - segment_id
         - avg_speed_kmh
         - sample_count
+
     method : str
-        Strategy used to convert the historical time series into one fallback value
-        per segment.
+        Strategy used to convert the historical time series into one value
+        for the current snapshot.
 
         Supported values:
         - "latest": use the most recent available historical value
@@ -34,55 +35,30 @@ def build_historical_fill_values(
     pd.DataFrame
         Columns:
         - segment_id
-        - historical_speed_kmh
-        - historical_bucket_count
-        - interpolation_method
+        - interpolated_speed_kmh
     """
     if historical_segment_df.empty:
-        return pd.DataFrame(
-            columns=[
-                "segment_id",
-                "historical_speed_kmh",
-                "historical_bucket_count",
-                "interpolation_method",
-            ]
-        )
+        return pd.DataFrame(columns=["segment_id", "interpolated_speed_kmh"])
 
     working_df = historical_segment_df.copy()
     working_df["segment_id"] = working_df["segment_id"].astype(str).str.strip()
 
     if method == "latest":
-        latest_rows = (
+        result = (
             working_df.sort_values(["segment_id", "bucket_time"])
             .groupby("segment_id", as_index=False)
-            .tail(1)
-            .copy()
+            .tail(1)[["segment_id", "avg_speed_kmh"]]
+            .rename(columns={"avg_speed_kmh": "interpolated_speed_kmh"})
+            .reset_index(drop=True)
         )
-
-        bucket_count_df = (
-            working_df.groupby("segment_id", as_index=False)
-            .agg(historical_bucket_count=("avg_speed_kmh", lambda s: s.notna().sum()))
-        )
-
-        result = latest_rows[["segment_id", "avg_speed_kmh"]].rename(
-            columns={"avg_speed_kmh": "historical_speed_kmh"}
-        )
-
-        result = result.merge(bucket_count_df, on="segment_id", how="left")
-        result["interpolation_method"] = "historical_latest"
         return result
 
     if method == "mean":
         result = (
             working_df.groupby("segment_id", as_index=False)
-            .agg(
-                historical_speed_kmh=("avg_speed_kmh", "mean"),
-                historical_bucket_count=("avg_speed_kmh", lambda s: s.notna().sum()),
-            )
-            .copy()
+            .agg(interpolated_speed_kmh=("avg_speed_kmh", "mean"))
+            .reset_index(drop=True)
         )
-
-        result["interpolation_method"] = "historical_mean"
         return result
 
     raise ValueError(
@@ -97,13 +73,13 @@ def build_completed_stib_snapshot(
     interpolation_method: str = "latest",
 ) -> pd.DataFrame:
     """
-    Build the completed STIB snapshot.
+    Build the final current-time STIB snapshot.
 
     Rules
     -----
-    1. If live speed exists, keep it.
-    2. If live speed is missing, use the historical fallback.
-    3. If both are missing, keep the final speed empty.
+    1. Keep live speed if it exists.
+    2. If live speed is missing, use the interpolated value.
+    3. The final output represents only the current time.
 
     Parameters
     ----------
@@ -132,13 +108,10 @@ def build_completed_stib_snapshot(
         Columns:
         - snapshot_time
         - segment_id
-        - speed_kmh
         - live_speed_kmh
-        - historical_speed_kmh
+        - interpolated_speed_kmh
+        - final_speed_kmh
         - interpolation
-        - interpolation_method
-        - live_sample_count
-        - historical_bucket_count
     """
     live_df = live_segment_df.copy()
     live_df["segment_id"] = live_df["segment_id"].astype(str).str.strip()
@@ -146,46 +119,37 @@ def build_completed_stib_snapshot(
     live_df = live_df.rename(
         columns={
             "avg_speed_kmh": "live_speed_kmh",
-            "sample_count": "live_sample_count",
         }
     )
 
-    historical_fill_df = build_historical_fill_values(
+    interpolated_df = build_interpolated_values(
         historical_segment_df=historical_segment_df,
         method=interpolation_method,
     )
 
     result = live_df.merge(
-        historical_fill_df,
+        interpolated_df,
         on="segment_id",
         how="left",
     )
 
     result["interpolation"] = result["live_speed_kmh"].isna() & result[
-        "historical_speed_kmh"
+        "interpolated_speed_kmh"
     ].notna()
 
-    result["speed_kmh"] = result["live_speed_kmh"].where(
+    result["final_speed_kmh"] = result["live_speed_kmh"].where(
         result["live_speed_kmh"].notna(),
-        result["historical_speed_kmh"],
-    )
-
-    result["interpolation_method"] = result["interpolation_method"].where(
-        result["interpolation"],
-        "live",
+        result["interpolated_speed_kmh"],
     )
 
     result = result[
         [
             "snapshot_time",
             "segment_id",
-            "speed_kmh",
             "live_speed_kmh",
-            "historical_speed_kmh",
+            "interpolated_speed_kmh",
+            "final_speed_kmh",
             "interpolation",
-            "interpolation_method",
-            "live_sample_count",
-            "historical_bucket_count",
         ]
     ].copy()
 
@@ -201,22 +165,8 @@ def fetch_completed_stib_snapshot(
     interpolation_method: str = "latest",
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
-    Fetch live and historical STIB data, then build the completed snapshot.
-
-    Parameters
-    ----------
-    token : str
-        MobilityTwin API token.
-    gpkg_path : str
-        Path to the segment GPKG file.
-    lookback_minutes : int
-        Historical window size in minutes.
-    bucket_minutes : int
-        Historical aggregation bucket size in minutes.
-    interpolation_method : str
-        Historical fallback strategy:
-        - "latest"
-        - "mean"
+    Fetch live STIB data, fetch historical STIB data, and build the final
+    current-time completed snapshot.
 
     Returns
     -------
