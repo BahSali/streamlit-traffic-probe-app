@@ -702,9 +702,9 @@ with content_box:
 
     if st.session_state["brussels_colorized"] and not completed_snapshot_df.empty:
         st.download_button(
-            label="Download current results",
+            label="Download results",
             data=convert_dataframe_to_csv_bytes(completed_snapshot_df),
-            file_name="current_results.csv",
+            file_name="results.csv",
             mime="text/csv",
             use_container_width=False,
         )
