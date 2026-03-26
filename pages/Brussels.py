@@ -8,7 +8,11 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from core.colors import get_speed_color, legend_html
-from core.data_sources import load_gpkg, load_live_stib_segment_speed_lookup
+from core.data_sources import (
+    load_completed_stib_snapshot,
+    load_gpkg,
+    load_live_stib_segment_speed_lookup,
+)
 from core.nav_panel import render_left_panel
 from core.styles import inject_styles
 from core.ui.brussels_controls import brussels_left_controls
@@ -180,6 +184,12 @@ def build_google_color(value) -> str:
 
     return get_speed_color(float(value))
 
+def convert_dataframe_to_csv_bytes(df: pd.DataFrame) -> bytes:
+    """
+    Convert a DataFrame to downloadable CSV bytes.
+    """
+    return df.to_csv(index=False).encode("utf-8")
+    
 
 def attach_live_stib_bus_speeds(gdf: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     """
@@ -645,7 +655,23 @@ with content_box:
         )
 
     diagnostics = payload["diagnostics"]
+    
+    completed_snapshot_df = pd.DataFrame()
+    if st.session_state["brussels_colorized"]:
+        token = get_live_stib_token()
 
+        if token:
+            try:
+                completed_snapshot_df = load_completed_stib_snapshot(
+                    token=token,
+                    gpkg_path=MAP_PATH,
+                    lookback_minutes=60,
+                    bucket_minutes=5,
+                    interpolation_method="latest",
+                )
+            except Exception as exc:
+                st.warning(f"Completed STIB snapshot could not be prepared: {exc}")
+                
     if diagnostics["error_message"]:
         st.warning(diagnostics["error_message"])
 
@@ -668,7 +694,18 @@ with content_box:
 
     with col_map:
         components.html(html, height=640, scrolling=False)
-
+    
+    if (
+        st.session_state["brussels_colorized"]
+        and not completed_snapshot_df.empty
+    ):
+        st.download_button(
+            label="Download completed STIB snapshot",
+            data=convert_dataframe_to_csv_bytes(completed_snapshot_df),
+            file_name="completed_stib_snapshot.csv",
+            mime="text/csv",
+        )
+        
     with col_legend:
         st.markdown(legend_html(), unsafe_allow_html=True)
 
