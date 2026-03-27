@@ -17,6 +17,7 @@ from core.nav_panel import render_left_panel
 from core.styles import inject_styles
 from core.ui.brussels_controls import brussels_left_controls
 
+from core.estimation.tmp import attach_tmp_estimated_speeds
 
 st.set_page_config(page_title="Brussels", layout="wide")
 inject_styles()
@@ -253,6 +254,9 @@ def attach_live_stib_bus_speeds(gdf: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
 
 
 @st.cache_data(show_spinner=False, ttl=90)
+
+@st.cache_data(show_spinner=False, ttl=90)
+
 def prepare_three_map_geojson(
     colorized: bool,
     selected_segment_names: tuple[str, ...],
@@ -264,8 +268,11 @@ def prepare_three_map_geojson(
 
     Map 1:
         Live STIB bus-derived speeds
+
     Map 2:
-        Placeholder model-derived street speed estimates
+        Temporary estimation based on the completed STIB snapshot.
+        This is a non-random baseline and keeps the app runnable.
+
     Map 3:
         Placeholder Google Routes API-derived speed proxy
     """
@@ -276,9 +283,52 @@ def prepare_three_map_geojson(
         list(selected_bus_ids),
     )
 
+    estimation_diagnostics = {
+        "estimation_mode": "disabled",
+        "snapshot_found": False,
+        "snapshot_time": None,
+        "map_has_id_column": "id" in gdf.columns,
+        "matched_segments": 0,
+        "error_message": None,
+    }
+
     if colorized:
         gdf, diagnostics = attach_live_stib_bus_speeds(gdf)
-        gdf["est_speed"] = [float(12 + (index * 7) % 42) for index in range(len(gdf))]
+
+        token = get_live_stib_token()
+        if token:
+            try:
+                completed_snapshot_df = load_completed_stib_snapshot(
+                    token=token,
+                    gpkg_path=MAP_PATH,
+                    lookback_minutes=60,
+                    bucket_minutes=5,
+                    interpolation_method="latest",
+                )
+                gdf, estimation_diagnostics = attach_tmp_estimated_speeds(
+                    gdf,
+                    completed_snapshot_df,
+                )
+            except Exception as exc:
+                gdf["est_speed"] = pd.NA
+                estimation_diagnostics = {
+                    "estimation_mode": "tmp_baseline",
+                    "snapshot_found": False,
+                    "snapshot_time": None,
+                    "map_has_id_column": "id" in gdf.columns,
+                    "matched_segments": 0,
+                    "error_message": f"Temporary estimation failed: {exc}",
+                }
+        else:
+            gdf["est_speed"] = pd.NA
+            estimation_diagnostics = {
+                "estimation_mode": "tmp_baseline",
+                "snapshot_found": False,
+                "snapshot_time": None,
+                "map_has_id_column": "id" in gdf.columns,
+                "matched_segments": 0,
+                "error_message": "Missing MobilityTwin token in Streamlit secrets.",
+            }
     else:
         diagnostics = {
             "token_found": False,
@@ -289,7 +339,7 @@ def prepare_three_map_geojson(
             "error_message": None,
         }
         gdf["bus_speed"] = pd.NA
-        gdf["est_speed"] = [None] * len(gdf)
+        gdf["est_speed"] = pd.NA
 
     google_speed_values = []
     google_color_values = []
@@ -355,8 +405,8 @@ def prepare_three_map_geojson(
         "segment_count": len(gdf),
         "live_bus_count": live_bus_count,
         "diagnostics": diagnostics,
+        "estimation_diagnostics": estimation_diagnostics,
     }
-
 
 def build_three_map_html(geojson_obj, center_lat, center_lon):
     """
@@ -655,6 +705,7 @@ with content_box:
         )
 
     diagnostics = payload["diagnostics"]
+    estimation_diagnostics = payload.get("estimation_diagnostics", {})
     
     completed_snapshot_df = pd.DataFrame()
     if st.session_state["brussels_colorized"]:
@@ -683,6 +734,19 @@ with content_box:
         f"common segment ids: {diagnostics['common_segment_ids']}, "
         f"matched segments: {diagnostics['matched_segments']}"
     )
+
+    if estimation_diagnostics:
+    st.caption(
+        "Map 2 estimation — "
+        f"mode: {estimation_diagnostics.get('estimation_mode', 'unknown')}, "
+        f"snapshot found: {'yes' if estimation_diagnostics.get('snapshot_found') else 'no'}, "
+        f"snapshot time: {estimation_diagnostics.get('snapshot_time') or 'N/A'}, "
+        f"matched segments: {estimation_diagnostics.get('matched_segments', 0)}"
+    )
+
+    if estimation_diagnostics.get("error_message"):
+        st.warning(estimation_diagnostics["error_message"])
+        
 
     html = build_three_map_html(
         payload["geojson"],
