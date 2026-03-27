@@ -663,7 +663,6 @@ def run_tmp_model_inference(
 
     return prediction_df, diagnostics
 
-
 def attach_tmp_estimated_speeds(
     gdf: pd.DataFrame,
     completed_snapshot_df: pd.DataFrame,
