@@ -1,4 +1,5 @@
 from __future__ import annotations
+import streamlit as st
 
 from io import BytesIO
 from pathlib import Path
@@ -268,7 +269,7 @@ def build_model_from_checkpoint(
     model.eval()
     return model, config
 
-
+@st.cache_data(show_spinner=False, ttl=3600)
 def build_segment_lookup_from_gpkg(gpkg_path: str) -> pd.DataFrame:
     gdf = gpd.read_file(gpkg_path).copy()
 
@@ -489,6 +490,13 @@ def build_historical_feature_matrix(
     ordered_segment_ids: list[str],
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     plan = build_historical_window_plan(snapshot_time)
+    bucket_times = [bucket_time for _, bucket_time in plan]
+
+    bucket_matrix = fetch_segment_snapshots_for_multiple_buckets(
+        token=token,
+        gpkg_path=gpkg_path,
+        bucket_times=bucket_times,
+    )
 
     historical_df = pd.DataFrame(index=ordered_segment_ids)
     historical_df.index.name = "segment_id"
@@ -496,15 +504,13 @@ def build_historical_feature_matrix(
     non_null_counts: dict[str, int] = {}
 
     for label, bucket_time in plan:
-        bucket_series = fetch_segment_snapshot_for_bucket(
-            token=token,
-            gpkg_path=gpkg_path,
-            bucket_time=bucket_time,
-        )
+        if bucket_time in bucket_matrix.columns:
+            aligned_series = bucket_matrix[bucket_time].reindex(ordered_segment_ids)
+        else:
+            aligned_series = pd.Series(index=ordered_segment_ids, dtype="float32")
 
-        aligned_series = bucket_series.reindex(ordered_segment_ids)
-        historical_df[label] = aligned_series.astype("float32")
-        non_null_counts[label] = int(aligned_series.notna().sum())
+        historical_df[label] = pd.to_numeric(aligned_series, errors="coerce").astype("float32")
+        non_null_counts[label] = int(historical_df[label].notna().sum())
 
     diagnostics = {
         "historical_window_ready": True,
@@ -705,3 +711,71 @@ def attach_tmp_estimated_speeds(
     diagnostics["matched_segments"] = int(result["est_speed"].notna().sum())
 
     return result, diagnostics
+
+def fetch_segment_snapshots_for_multiple_buckets(
+    token: str,
+    gpkg_path: str,
+    bucket_times: list[pd.Timestamp],
+) -> pd.DataFrame:
+    """
+    Fetch one large historical window once, then derive all required bucket-level
+    segment speed snapshots from that single dataset.
+
+    Returns
+    -------
+    pd.DataFrame
+        Index: segment_id
+        Columns: bucket_time (Timestamp)
+        Values: historical speed in km/h
+    """
+    if not bucket_times:
+        return pd.DataFrame()
+
+    lookup_df = build_segment_lookup_from_gpkg(gpkg_path)
+
+    min_bucket = min(bucket_times)
+    max_bucket = max(bucket_times)
+
+    window_start = min_bucket - pd.Timedelta(minutes=PARQUET_MARGIN_MINUTES)
+    window_end = max_bucket + pd.Timedelta(minutes=PARQUET_BUCKET_MINUTES)
+
+    raw_speed_df = fetch_raw_bucket_speeds(
+        token=token,
+        window_start=window_start,
+        window_end=window_end,
+    )
+
+    if raw_speed_df.empty:
+        return pd.DataFrame(index=pd.Index([], name="segment_id"))
+
+    filtered_df = raw_speed_df.loc[
+        raw_speed_df["local_time"].isin(bucket_times)
+    ].copy()
+
+    if filtered_df.empty:
+        return pd.DataFrame(index=pd.Index([], name="segment_id"))
+
+    merged_df = pd.merge(
+        filtered_df,
+        lookup_df,
+        on=["pointId", "lineId"],
+        how="inner",
+    )
+
+    if merged_df.empty:
+        return pd.DataFrame(index=pd.Index([], name="segment_id"))
+
+    segment_df = (
+        merged_df.groupby(["segment_id", "local_time"], as_index=False)["speed"]
+        .mean()
+        .rename(columns={"speed": "historical_speed_kmh"})
+    )
+
+    pivot_df = segment_df.pivot(
+        index="segment_id",
+        columns="local_time",
+        values="historical_speed_kmh",
+    ).sort_index()
+
+    pivot_df.index = pivot_df.index.astype(str)
+    return pivot_df
