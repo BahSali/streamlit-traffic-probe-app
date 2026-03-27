@@ -136,14 +136,15 @@ def prepare_snapshot_series(completed_snapshot_df: pd.DataFrame) -> pd.Series:
     )
 
     series = (
-        working_df.dropna(subset=["final_speed_kmh"])
+        working_df
         .drop_duplicates(subset=["segment_id"], keep="last")
         .set_index("segment_id")["final_speed_kmh"]
         .sort_index()
+        .fillna(0.0)
+        .astype("float32")
     )
 
     return series
-
 
 def resolve_checkpoint_path() -> Path:
     """
