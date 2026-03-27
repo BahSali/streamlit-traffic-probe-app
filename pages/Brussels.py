@@ -291,7 +291,8 @@ def prepare_three_map_geojson(
         "used_fallback_window": False,
         "error_message": None,
     }
-
+    completed_snapshot_df = pd.DataFrame()
+    
     if colorized:
         gdf, diagnostics = attach_live_stib_bus_speeds(gdf)
 
