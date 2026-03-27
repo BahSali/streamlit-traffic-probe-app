@@ -252,9 +252,6 @@ def attach_live_stib_bus_speeds(gdf: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
 
     return result, diagnostics
 
-
-@st.cache_data(show_spinner=False, ttl=90)
-
 @st.cache_data(show_spinner=False, ttl=90)
 
 def prepare_three_map_geojson(
@@ -736,13 +733,13 @@ with content_box:
     )
 
     if estimation_diagnostics:
-    st.caption(
-        "Map 2 estimation — "
-        f"mode: {estimation_diagnostics.get('estimation_mode', 'unknown')}, "
-        f"snapshot found: {'yes' if estimation_diagnostics.get('snapshot_found') else 'no'}, "
-        f"snapshot time: {estimation_diagnostics.get('snapshot_time') or 'N/A'}, "
-        f"matched segments: {estimation_diagnostics.get('matched_segments', 0)}"
-    )
+        st.caption(
+            "Map 2 estimation — "
+            f"mode: {estimation_diagnostics.get('estimation_mode', 'unknown')}, "
+            f"snapshot found: {'yes' if estimation_diagnostics.get('snapshot_found') else 'no'}, "
+            f"snapshot time: {estimation_diagnostics.get('snapshot_time') or 'N/A'}, "
+            f"matched segments: {estimation_diagnostics.get('matched_segments', 0)}"
+        )
 
     if estimation_diagnostics.get("error_message"):
         st.warning(estimation_diagnostics["error_message"])
