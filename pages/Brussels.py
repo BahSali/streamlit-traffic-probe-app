@@ -13,10 +13,11 @@ from core.data_sources import (
     load_gpkg,
     load_live_stib_segment_speed_lookup,
 )
-from core.estimation.tmp import attach_tmp_estimated_speeds
 from core.nav_panel import render_left_panel
 from core.styles import inject_styles
 from core.ui.brussels_controls import brussels_left_controls
+
+from core.estimation.tmp import attach_tmp_estimated_speeds
 
 st.set_page_config(page_title="Brussels", layout="wide")
 inject_styles()
@@ -38,7 +39,6 @@ if "brussels_applied_bus_ids" not in st.session_state:
 
 if "brussels_refresh_key" not in st.session_state:
     st.session_state["brussels_refresh_key"] = 0
-
 
 @st.cache_data(show_spinner=False)
 def parse_bus_lines(value) -> list[str]:
@@ -185,13 +185,12 @@ def build_google_color(value) -> str:
 
     return get_speed_color(float(value))
 
-
 def convert_dataframe_to_csv_bytes(df: pd.DataFrame) -> bytes:
     """
     Convert a DataFrame to downloadable CSV bytes.
     """
     return df.to_csv(index=False).encode("utf-8")
-
+    
 
 def attach_live_stib_bus_speeds(gdf: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     """
@@ -246,9 +245,7 @@ def attach_live_stib_bus_speeds(gdf: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     map_segment_ids = set(result["segment_id_str"].tolist())
     lookup_segment_ids = set(speed_lookup.keys())
 
-    diagnostics["common_segment_ids"] = len(
-        map_segment_ids.intersection(lookup_segment_ids)
-    )
+    diagnostics["common_segment_ids"] = len(map_segment_ids.intersection(lookup_segment_ids))
 
     result["bus_speed"] = result["segment_id_str"].map(speed_lookup)
     diagnostics["matched_segments"] = int(result["bus_speed"].notna().sum())
@@ -269,12 +266,10 @@ def prepare_three_map_geojson(
     Map 1:
         Live STIB bus-derived speeds
     Map 2:
-        Temporary model-derived street speed estimates
+        Placeholder model-derived street speed estimates
     Map 3:
         Placeholder Google Routes API-derived speed proxy
     """
-    del refresh_key
-
     gdf = load_brussels_map().copy()
 
     selected_map_fids = get_selected_map_fids(
@@ -282,37 +277,9 @@ def prepare_three_map_geojson(
         list(selected_bus_ids),
     )
 
-    completed_snapshot_df = pd.DataFrame()
-    estimation_error_message = None
-
     if colorized:
         gdf, diagnostics = attach_live_stib_bus_speeds(gdf)
-
-        token = get_live_stib_token()
-        if token:
-            try:
-                completed_snapshot_df = load_completed_stib_snapshot(
-                    token=token,
-                    gpkg_path=MAP_PATH,
-                    lookback_minutes=60,
-                    bucket_minutes=5,
-                    interpolation_method="latest",
-                )
-
-                gdf, estimation_diagnostics = attach_tmp_estimated_speeds(
-                    gdf=gdf,
-                    completed_snapshot_df=completed_snapshot_df,
-                    token=token,
-                    gpkg_path=MAP_PATH,
-                )
-
-                estimation_error_message = estimation_diagnostics.get("error_message")
-            except Exception as exc:
-                gdf["est_speed"] = pd.NA
-                estimation_error_message = f"Temporary estimation failed: {exc}"
-        else:
-            gdf["est_speed"] = pd.NA
-            estimation_error_message = "Missing MobilityTwin token in Streamlit secrets."
+        gdf["est_speed"] = [float(12 + (index * 7) % 42) for index in range(len(gdf))]
     else:
         diagnostics = {
             "token_found": False,
@@ -389,8 +356,6 @@ def prepare_three_map_geojson(
         "segment_count": len(gdf),
         "live_bus_count": live_bus_count,
         "diagnostics": diagnostics,
-        "completed_snapshot_df": completed_snapshot_df,
-        "estimation_error_message": estimation_error_message,
     }
 
 
@@ -682,7 +647,7 @@ with content_box:
         "Three synced maps for bus-derived, model-derived, and Google-derived speed comparison."
     )
 
-    with st.spinner("Preparing Brussels maps..."):
+    with st.spinner("Loading Brussels map geometry..."):
         payload = prepare_three_map_geojson(
             st.session_state["brussels_colorized"],
             tuple(st.session_state["brussels_applied_segment_names"]),
@@ -691,14 +656,25 @@ with content_box:
         )
 
     diagnostics = payload["diagnostics"]
-    completed_snapshot_df = payload.get("completed_snapshot_df", pd.DataFrame())
-    estimation_error_message = payload.get("estimation_error_message")
+    
+    completed_snapshot_df = pd.DataFrame()
+    if st.session_state["brussels_colorized"]:
+        token = get_live_stib_token()
 
+        if token:
+            try:
+                completed_snapshot_df = load_completed_stib_snapshot(
+                    token=token,
+                    gpkg_path=MAP_PATH,
+                    lookback_minutes=60,
+                    bucket_minutes=5,
+                    interpolation_method="latest",
+                )
+            except Exception as exc:
+                st.warning(f"Completed STIB snapshot could not be prepared: {exc}")
+                
     if diagnostics["error_message"]:
         st.warning(diagnostics["error_message"])
-
-    if estimation_error_message:
-        st.warning(estimation_error_message)
 
     st.caption(
         "Live STIB diagnostics — "
