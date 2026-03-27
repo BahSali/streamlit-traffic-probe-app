@@ -254,6 +254,22 @@ def attach_live_stib_bus_speeds(gdf: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
 
 
 @st.cache_data(show_spinner=False, ttl=90)
+def get_completed_snapshot_for_ui(refresh_key: int) -> pd.DataFrame:
+    """
+    Load the completed STIB snapshot once and reuse it across the page.
+    """
+    token = get_live_stib_token()
+    if not token:
+        return pd.DataFrame()
+
+    return load_completed_stib_snapshot(
+        token=token,
+        gpkg_path=MAP_PATH,
+        lookback_minutes=60,
+        bucket_minutes=5,
+        interpolation_method="latest",
+    )
+    
 def prepare_three_map_geojson(
     colorized: bool,
     selected_segment_names: tuple[str, ...],
@@ -299,13 +315,7 @@ def prepare_three_map_geojson(
         token = get_live_stib_token()
         if token:
             try:
-                completed_snapshot_df = load_completed_stib_snapshot(
-                    token=token,
-                    gpkg_path=MAP_PATH,
-                    lookback_minutes=60,
-                    bucket_minutes=5,
-                    interpolation_method="latest",
-                )
+                completed_snapshot_df = get_completed_snapshot_for_ui(refresh_key)
 
                 gdf, estimation_diagnostics = attach_tmp_estimated_speeds(
                     gdf=gdf,
@@ -722,19 +732,12 @@ with content_box:
 
     completed_snapshot_df = pd.DataFrame()
     if st.session_state["brussels_colorized"]:
-        token = get_live_stib_token()
-
-        if token:
-            try:
-                completed_snapshot_df = load_completed_stib_snapshot(
-                    token=token,
-                    gpkg_path=MAP_PATH,
-                    lookback_minutes=60,
-                    bucket_minutes=5,
-                    interpolation_method="latest",
-                )
-            except Exception as exc:
-                st.warning(f"Completed STIB snapshot could not be prepared: {exc}")
+        try:
+            completed_snapshot_df = get_completed_snapshot_for_ui(
+                st.session_state["brussels_refresh_key"]
+            )
+        except Exception as exc:
+            st.warning(f"Completed STIB snapshot could not be prepared: {exc}")
                 
     if diagnostics["error_message"]:
         st.warning(diagnostics["error_message"])
