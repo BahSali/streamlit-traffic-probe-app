@@ -13,11 +13,10 @@ from core.data_sources import (
     load_gpkg,
     load_live_stib_segment_speed_lookup,
 )
+from core.estimation.tmp import attach_tmp_estimated_speeds
 from core.nav_panel import render_left_panel
 from core.styles import inject_styles
 from core.ui.brussels_controls import brussels_left_controls
-
-from core.estimation.tmp import attach_tmp_estimated_speeds
 
 st.set_page_config(page_title="Brussels", layout="wide")
 inject_styles()
@@ -39,6 +38,7 @@ if "brussels_applied_bus_ids" not in st.session_state:
 
 if "brussels_refresh_key" not in st.session_state:
     st.session_state["brussels_refresh_key"] = 0
+
 
 @st.cache_data(show_spinner=False)
 def parse_bus_lines(value) -> list[str]:
@@ -185,12 +185,13 @@ def build_google_color(value) -> str:
 
     return get_speed_color(float(value))
 
+
 def convert_dataframe_to_csv_bytes(df: pd.DataFrame) -> bytes:
     """
     Convert a DataFrame to downloadable CSV bytes.
     """
     return df.to_csv(index=False).encode("utf-8")
-    
+
 
 def attach_live_stib_bus_speeds(gdf: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     """
@@ -200,7 +201,7 @@ def attach_live_stib_bus_speeds(gdf: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     -------
     tuple[pd.DataFrame, dict]
         - The updated GeoDataFrame
-        - A small diagnostics dictionary for on-screen debugging
+        - A diagnostics dictionary
     """
     result = gdf.copy()
 
@@ -217,17 +218,13 @@ def attach_live_stib_bus_speeds(gdf: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
 
     token = get_live_stib_token()
     if not token:
-        diagnostics["error_message"] = (
-            "Missing MobilityTwin token in Streamlit secrets."
-        )
+        diagnostics["error_message"] = "Missing MobilityTwin token in Streamlit secrets."
         return result, diagnostics
 
     diagnostics["token_found"] = True
 
     if "id" not in result.columns:
-        diagnostics["error_message"] = (
-            "The Brussels map file does not contain an 'id' column."
-        )
+        diagnostics["error_message"] = "The Brussels map file does not contain an 'id' column."
         return result, diagnostics
 
     try:
@@ -241,19 +238,20 @@ def attach_live_stib_bus_speeds(gdf: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
 
     diagnostics["lookup_size"] = len(speed_lookup)
 
-    result["segment_id_str"] = result["id"].astype(str)
+    result["segment_id_str"] = result["id"].astype(str).str.strip()
     map_segment_ids = set(result["segment_id_str"].tolist())
-    lookup_segment_ids = set(speed_lookup.keys())
+    lookup_segment_ids = set(str(key).strip() for key in speed_lookup.keys())
 
     diagnostics["common_segment_ids"] = len(map_segment_ids.intersection(lookup_segment_ids))
 
-    result["bus_speed"] = result["segment_id_str"].map(speed_lookup)
+    normalized_lookup = {str(key).strip(): value for key, value in speed_lookup.items()}
+    result["bus_speed"] = result["segment_id_str"].map(normalized_lookup)
     diagnostics["matched_segments"] = int(result["bus_speed"].notna().sum())
 
     return result, diagnostics
 
-@st.cache_data(show_spinner=False, ttl=90)
 
+@st.cache_data(show_spinner=False, ttl=90)
 def prepare_three_map_geojson(
     colorized: bool,
     selected_segment_names: tuple[str, ...],
@@ -267,12 +265,13 @@ def prepare_three_map_geojson(
         Live STIB bus-derived speeds
 
     Map 2:
-        Temporary estimation based on the completed STIB snapshot.
-        This is a non-random baseline and keeps the app runnable.
+        Temporary PT-based estimation using historical Brussels Mobility features
 
     Map 3:
         Placeholder Google Routes API-derived speed proxy
     """
+    del refresh_key
+
     gdf = load_brussels_map().copy()
 
     selected_map_fids = get_selected_map_fids(
@@ -280,19 +279,26 @@ def prepare_three_map_geojson(
         list(selected_bus_ids),
     )
 
+    token = get_live_stib_token()
+    completed_snapshot_df = pd.DataFrame()
+
     estimation_diagnostics = {
         "estimation_mode": "disabled",
         "snapshot_found": False,
         "snapshot_time": None,
+        "snapshot_bucket_time": None,
         "map_has_id_column": "id" in gdf.columns,
         "matched_segments": 0,
+        "model_loaded": False,
+        "historical_window_ready": False,
+        "used_fallback_window": False,
+        "historical_non_null_counts": {},
         "error_message": None,
     }
 
     if colorized:
         gdf, diagnostics = attach_live_stib_bus_speeds(gdf)
 
-        token = get_live_stib_token()
         if token:
             try:
                 completed_snapshot_df = load_completed_stib_snapshot(
@@ -302,28 +308,41 @@ def prepare_three_map_geojson(
                     bucket_minutes=5,
                     interpolation_method="latest",
                 )
+
                 gdf, estimation_diagnostics = attach_tmp_estimated_speeds(
-                    gdf,
-                    completed_snapshot_df,
+                    gdf=gdf,
+                    completed_snapshot_df=completed_snapshot_df,
+                    token=token,
+                    gpkg_path=MAP_PATH,
                 )
             except Exception as exc:
                 gdf["est_speed"] = pd.NA
                 estimation_diagnostics = {
-                    "estimation_mode": "tmp_baseline",
+                    "estimation_mode": "pt_inference_historical_tmp",
                     "snapshot_found": False,
                     "snapshot_time": None,
+                    "snapshot_bucket_time": None,
                     "map_has_id_column": "id" in gdf.columns,
                     "matched_segments": 0,
+                    "model_loaded": False,
+                    "historical_window_ready": False,
+                    "used_fallback_window": False,
+                    "historical_non_null_counts": {},
                     "error_message": f"Temporary estimation failed: {exc}",
                 }
         else:
             gdf["est_speed"] = pd.NA
             estimation_diagnostics = {
-                "estimation_mode": "tmp_baseline",
+                "estimation_mode": "pt_inference_historical_tmp",
                 "snapshot_found": False,
                 "snapshot_time": None,
+                "snapshot_bucket_time": None,
                 "map_has_id_column": "id" in gdf.columns,
                 "matched_segments": 0,
+                "model_loaded": False,
+                "historical_window_ready": False,
+                "used_fallback_window": False,
+                "historical_non_null_counts": {},
                 "error_message": "Missing MobilityTwin token in Streamlit secrets.",
             }
     else:
@@ -403,7 +422,9 @@ def prepare_three_map_geojson(
         "live_bus_count": live_bus_count,
         "diagnostics": diagnostics,
         "estimation_diagnostics": estimation_diagnostics,
+        "completed_snapshot_df": completed_snapshot_df,
     }
+
 
 def build_three_map_html(geojson_obj, center_lat, center_lon):
     """
@@ -703,23 +724,8 @@ with content_box:
 
     diagnostics = payload["diagnostics"]
     estimation_diagnostics = payload.get("estimation_diagnostics", {})
-    
-    completed_snapshot_df = pd.DataFrame()
-    if st.session_state["brussels_colorized"]:
-        token = get_live_stib_token()
+    completed_snapshot_df = payload.get("completed_snapshot_df", pd.DataFrame())
 
-        if token:
-            try:
-                completed_snapshot_df = load_completed_stib_snapshot(
-                    token=token,
-                    gpkg_path=MAP_PATH,
-                    lookback_minutes=60,
-                    bucket_minutes=5,
-                    interpolation_method="latest",
-                )
-            except Exception as exc:
-                st.warning(f"Completed STIB snapshot could not be prepared: {exc}")
-                
     if diagnostics["error_message"]:
         st.warning(diagnostics["error_message"])
 
@@ -738,12 +744,20 @@ with content_box:
             f"mode: {estimation_diagnostics.get('estimation_mode', 'unknown')}, "
             f"snapshot found: {'yes' if estimation_diagnostics.get('snapshot_found') else 'no'}, "
             f"snapshot time: {estimation_diagnostics.get('snapshot_time') or 'N/A'}, "
+            f"bucket time: {estimation_diagnostics.get('snapshot_bucket_time') or 'N/A'}, "
+            f"model loaded: {'yes' if estimation_diagnostics.get('model_loaded') else 'no'}, "
+            f"historical ready: {'yes' if estimation_diagnostics.get('historical_window_ready') else 'no'}, "
+            f"fallback window: {'yes' if estimation_diagnostics.get('used_fallback_window') else 'no'}, "
             f"matched segments: {estimation_diagnostics.get('matched_segments', 0)}"
+        )
+
+        st.caption(
+            "Historical coverage — "
+            f"{estimation_diagnostics.get('historical_non_null_counts', {})}"
         )
 
     if estimation_diagnostics.get("error_message"):
         st.warning(estimation_diagnostics["error_message"])
-        
 
     html = build_three_map_html(
         payload["geojson"],
