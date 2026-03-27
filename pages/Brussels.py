@@ -201,7 +201,7 @@ def attach_live_stib_bus_speeds(gdf: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     -------
     tuple[pd.DataFrame, dict]
         - The updated GeoDataFrame
-        - A diagnostics dictionary
+        - A small diagnostics dictionary for on-screen debugging
     """
     result = gdf.copy()
 
@@ -218,13 +218,17 @@ def attach_live_stib_bus_speeds(gdf: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
 
     token = get_live_stib_token()
     if not token:
-        diagnostics["error_message"] = "Missing MobilityTwin token in Streamlit secrets."
+        diagnostics["error_message"] = (
+            "Missing MobilityTwin token in Streamlit secrets."
+        )
         return result, diagnostics
 
     diagnostics["token_found"] = True
 
     if "id" not in result.columns:
-        diagnostics["error_message"] = "The Brussels map file does not contain an 'id' column."
+        diagnostics["error_message"] = (
+            "The Brussels map file does not contain an 'id' column."
+        )
         return result, diagnostics
 
     try:
@@ -238,14 +242,15 @@ def attach_live_stib_bus_speeds(gdf: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
 
     diagnostics["lookup_size"] = len(speed_lookup)
 
-    result["segment_id_str"] = result["id"].astype(str).str.strip()
+    result["segment_id_str"] = result["id"].astype(str)
     map_segment_ids = set(result["segment_id_str"].tolist())
-    lookup_segment_ids = set(str(key).strip() for key in speed_lookup.keys())
+    lookup_segment_ids = set(speed_lookup.keys())
 
-    diagnostics["common_segment_ids"] = len(map_segment_ids.intersection(lookup_segment_ids))
+    diagnostics["common_segment_ids"] = len(
+        map_segment_ids.intersection(lookup_segment_ids)
+    )
 
-    normalized_lookup = {str(key).strip(): value for key, value in speed_lookup.items()}
-    result["bus_speed"] = result["segment_id_str"].map(normalized_lookup)
+    result["bus_speed"] = result["segment_id_str"].map(speed_lookup)
     diagnostics["matched_segments"] = int(result["bus_speed"].notna().sum())
 
     return result, diagnostics
@@ -263,10 +268,8 @@ def prepare_three_map_geojson(
 
     Map 1:
         Live STIB bus-derived speeds
-
     Map 2:
-        Temporary PT-based estimation using historical Brussels Mobility features
-
+        Temporary model-derived street speed estimates
     Map 3:
         Placeholder Google Routes API-derived speed proxy
     """
@@ -279,26 +282,13 @@ def prepare_three_map_geojson(
         list(selected_bus_ids),
     )
 
-    token = get_live_stib_token()
     completed_snapshot_df = pd.DataFrame()
-
-    estimation_diagnostics = {
-        "estimation_mode": "disabled",
-        "snapshot_found": False,
-        "snapshot_time": None,
-        "snapshot_bucket_time": None,
-        "map_has_id_column": "id" in gdf.columns,
-        "matched_segments": 0,
-        "model_loaded": False,
-        "historical_window_ready": False,
-        "used_fallback_window": False,
-        "historical_non_null_counts": {},
-        "error_message": None,
-    }
+    estimation_error_message = None
 
     if colorized:
         gdf, diagnostics = attach_live_stib_bus_speeds(gdf)
 
+        token = get_live_stib_token()
         if token:
             try:
                 completed_snapshot_df = load_completed_stib_snapshot(
@@ -315,36 +305,14 @@ def prepare_three_map_geojson(
                     token=token,
                     gpkg_path=MAP_PATH,
                 )
+
+                estimation_error_message = estimation_diagnostics.get("error_message")
             except Exception as exc:
                 gdf["est_speed"] = pd.NA
-                estimation_diagnostics = {
-                    "estimation_mode": "pt_inference_historical_tmp",
-                    "snapshot_found": False,
-                    "snapshot_time": None,
-                    "snapshot_bucket_time": None,
-                    "map_has_id_column": "id" in gdf.columns,
-                    "matched_segments": 0,
-                    "model_loaded": False,
-                    "historical_window_ready": False,
-                    "used_fallback_window": False,
-                    "historical_non_null_counts": {},
-                    "error_message": f"Temporary estimation failed: {exc}",
-                }
+                estimation_error_message = f"Temporary estimation failed: {exc}"
         else:
             gdf["est_speed"] = pd.NA
-            estimation_diagnostics = {
-                "estimation_mode": "pt_inference_historical_tmp",
-                "snapshot_found": False,
-                "snapshot_time": None,
-                "snapshot_bucket_time": None,
-                "map_has_id_column": "id" in gdf.columns,
-                "matched_segments": 0,
-                "model_loaded": False,
-                "historical_window_ready": False,
-                "used_fallback_window": False,
-                "historical_non_null_counts": {},
-                "error_message": "Missing MobilityTwin token in Streamlit secrets.",
-            }
+            estimation_error_message = "Missing MobilityTwin token in Streamlit secrets."
     else:
         diagnostics = {
             "token_found": False,
@@ -355,7 +323,7 @@ def prepare_three_map_geojson(
             "error_message": None,
         }
         gdf["bus_speed"] = pd.NA
-        gdf["est_speed"] = pd.NA
+        gdf["est_speed"] = [None] * len(gdf)
 
     google_speed_values = []
     google_color_values = []
@@ -421,8 +389,8 @@ def prepare_three_map_geojson(
         "segment_count": len(gdf),
         "live_bus_count": live_bus_count,
         "diagnostics": diagnostics,
-        "estimation_diagnostics": estimation_diagnostics,
         "completed_snapshot_df": completed_snapshot_df,
+        "estimation_error_message": estimation_error_message,
     }
 
 
@@ -714,7 +682,7 @@ with content_box:
         "Three synced maps for bus-derived, model-derived, and Google-derived speed comparison."
     )
 
-    with st.spinner("Loading Brussels map geometry..."):
+    with st.spinner("Preparing Brussels maps..."):
         payload = prepare_three_map_geojson(
             st.session_state["brussels_colorized"],
             tuple(st.session_state["brussels_applied_segment_names"]),
@@ -723,11 +691,14 @@ with content_box:
         )
 
     diagnostics = payload["diagnostics"]
-    estimation_diagnostics = payload.get("estimation_diagnostics", {})
     completed_snapshot_df = payload.get("completed_snapshot_df", pd.DataFrame())
+    estimation_error_message = payload.get("estimation_error_message")
 
     if diagnostics["error_message"]:
         st.warning(diagnostics["error_message"])
+
+    if estimation_error_message:
+        st.warning(estimation_error_message)
 
     st.caption(
         "Live STIB diagnostics — "
@@ -737,27 +708,6 @@ with content_box:
         f"common segment ids: {diagnostics['common_segment_ids']}, "
         f"matched segments: {diagnostics['matched_segments']}"
     )
-
-    if estimation_diagnostics:
-        st.caption(
-            "Map 2 estimation — "
-            f"mode: {estimation_diagnostics.get('estimation_mode', 'unknown')}, "
-            f"snapshot found: {'yes' if estimation_diagnostics.get('snapshot_found') else 'no'}, "
-            f"snapshot time: {estimation_diagnostics.get('snapshot_time') or 'N/A'}, "
-            f"bucket time: {estimation_diagnostics.get('snapshot_bucket_time') or 'N/A'}, "
-            f"model loaded: {'yes' if estimation_diagnostics.get('model_loaded') else 'no'}, "
-            f"historical ready: {'yes' if estimation_diagnostics.get('historical_window_ready') else 'no'}, "
-            f"fallback window: {'yes' if estimation_diagnostics.get('used_fallback_window') else 'no'}, "
-            f"matched segments: {estimation_diagnostics.get('matched_segments', 0)}"
-        )
-
-        st.caption(
-            "Historical coverage — "
-            f"{estimation_diagnostics.get('historical_non_null_counts', {})}"
-        )
-
-    if estimation_diagnostics.get("error_message"):
-        st.warning(estimation_diagnostics["error_message"])
 
     html = build_three_map_html(
         payload["geojson"],
