@@ -1,5 +1,4 @@
 from __future__ import annotations
-import streamlit as st
 
 from io import BytesIO
 from pathlib import Path
@@ -11,6 +10,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import requests
+import streamlit as st
 import torch
 import torch.nn as nn
 
@@ -19,6 +19,7 @@ BRUSSELS_TIMEZONE = "Europe/Brussels"
 PARQUET_COMPONENT = "stib_vehicle_distance_parquetize"
 PARQUET_MARGIN_MINUTES = 30
 PARQUET_BUCKET_MINUTES = 15
+REQUEST_TIMEOUT_SECONDS = 45
 
 
 class RefinerCNN(nn.Module):
@@ -122,6 +123,8 @@ def build_empty_estimation_diagnostics() -> dict[str, Any]:
         "historical_window_labels": [],
         "historical_window_times": [],
         "historical_non_null_counts": {},
+        "historical_fetch_group_count": 0,
+        "historical_fetch_windows": [],
         "raw_snapshot_rows": 0,
         "prepared_snapshot_size": 0,
         "prepared_snapshot_null_count": 0,
@@ -161,7 +164,7 @@ def build_historical_window_plan(snapshot_time: pd.Timestamp) -> list[tuple[str,
     """
     bucket_time = floor_to_15_minutes(snapshot_time)
 
-    plan = [
+    return [
         ("recent_t_minus_60m", bucket_time - pd.Timedelta(minutes=60)),
         ("recent_t_minus_45m", bucket_time - pd.Timedelta(minutes=45)),
         ("recent_t_minus_30m", bucket_time - pd.Timedelta(minutes=30)),
@@ -171,7 +174,6 @@ def build_historical_window_plan(snapshot_time: pd.Timestamp) -> list[tuple[str,
         ("similar_t_minus_2w", bucket_time - pd.Timedelta(weeks=2)),
         ("similar_t_minus_3w", bucket_time - pd.Timedelta(weeks=3)),
     ]
-    return plan
 
 
 def prepare_snapshot_series(completed_snapshot_df: pd.DataFrame) -> pd.Series:
@@ -269,6 +271,7 @@ def build_model_from_checkpoint(
     model.eval()
     return model, config
 
+
 @st.cache_data(show_spinner=False, ttl=3600)
 def build_segment_lookup_from_gpkg(gpkg_path: str) -> pd.DataFrame:
     gdf = gpd.read_file(gpkg_path).copy()
@@ -303,7 +306,7 @@ def build_segment_lookup_from_gpkg(gpkg_path: str) -> pd.DataFrame:
 
 def auth_request(url: str, token: str) -> dict[str, Any]:
     headers = {"Authorization": f"Bearer {token}"}
-    response = requests.get(url, headers=headers, timeout=120)
+    response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT_SECONDS)
     response.raise_for_status()
     return response.json()
 
@@ -312,7 +315,7 @@ def download_and_concatenate_parquets(url_list: list[str]) -> pa.Table:
     arrow_table = None
 
     for url in url_list:
-        response = requests.get(url, timeout=120)
+        response = requests.get(url, timeout=REQUEST_TIMEOUT_SECONDS)
         response.raise_for_status()
         data = BytesIO(response.content)
         table = pq.read_table(data)
@@ -348,74 +351,75 @@ def fetch_raw_bucket_speeds(
 
     parquet_urls = response.get("results", [])
     if not parquet_urls:
-        return pd.DataFrame(
-            columns=["local_time", "lineId", "pointId", "speed"]
-        )
+        return pd.DataFrame(columns=["local_time", "lineId", "pointId", "speed"])
 
     arrow_table = download_and_concatenate_parquets(parquet_urls)
 
     con = duckdb.connect()
-    con.register("combined_data", arrow_table)
+    try:
+        con.register("combined_data", arrow_table)
 
-    df = con.execute(
-        f"""
-        WITH entries AS (
+        df = con.execute(
+            f"""
+            WITH entries AS (
+                SELECT
+                    CAST(lineId AS VARCHAR) AS lineId,
+                    CAST(pointId AS BIGINT) AS pointId,
+                    directionId,
+                    distanceFromPoint,
+                    (date AT TIME ZONE 'UTC' AT TIME ZONE '{BRUSSELS_TIMEZONE}')::timestamp AS local_date
+                FROM combined_data
+            ),
+            filtered AS (
+                SELECT
+                    *,
+                    COUNT(*) OVER (
+                        PARTITION BY directionId, pointId, local_date, lineId
+                    ) AS row_count
+                FROM entries
+            ),
+            delta_table AS (
+                SELECT
+                    local_date,
+                    lineId,
+                    directionId,
+                    pointId,
+                    distanceFromPoint,
+                    distanceFromPoint
+                        - LAG(distanceFromPoint) OVER (
+                            PARTITION BY pointId, directionId, lineId
+                            ORDER BY local_date
+                        ) AS distance_delta,
+                    local_date
+                        - LAG(local_date) OVER (
+                            PARTITION BY pointId, directionId, lineId
+                            ORDER BY local_date
+                        ) AS time_delta
+                FROM filtered
+                WHERE row_count = 1
+            ),
+            speed_table AS (
+                SELECT
+                    local_date,
+                    lineId,
+                    pointId,
+                    distance_delta / epoch(time_delta) AS speed
+                FROM delta_table
+                WHERE epoch(time_delta) < 30
+                  AND distance_delta < 600
+            )
             SELECT
-                CAST(lineId AS VARCHAR) AS lineId,
-                CAST(pointId AS BIGINT) AS pointId,
-                directionId,
-                distanceFromPoint,
-                (date AT TIME ZONE 'UTC' AT TIME ZONE '{BRUSSELS_TIMEZONE}')::timestamp AS local_date
-            FROM combined_data
-        ),
-        filtered AS (
-            SELECT
-                *,
-                COUNT(*) OVER (
-                    PARTITION BY directionId, pointId, local_date, lineId
-                ) AS row_count
-            FROM entries
-        ),
-        delta_table AS (
-            SELECT
-                local_date,
+                time_bucket(INTERVAL '{PARQUET_BUCKET_MINUTES} minutes', local_date) AS local_time,
                 lineId,
-                directionId,
                 pointId,
-                distanceFromPoint,
-                distanceFromPoint
-                    - LAG(distanceFromPoint) OVER (
-                        PARTITION BY pointId, directionId, lineId
-                        ORDER BY local_date
-                    ) AS distance_delta,
-                local_date
-                    - LAG(local_date) OVER (
-                        PARTITION BY pointId, directionId, lineId
-                        ORDER BY local_date
-                    ) AS time_delta
-            FROM filtered
-            WHERE row_count = 1
-        ),
-        speed_table AS (
-            SELECT
-                local_date,
-                lineId,
-                pointId,
-                distance_delta / epoch(time_delta) AS speed
-            FROM delta_table
-            WHERE epoch(time_delta) < 30
-              AND distance_delta < 600
-        )
-        SELECT
-            time_bucket(INTERVAL '{PARQUET_BUCKET_MINUTES} minutes', local_date) AS local_time,
-            lineId,
-            pointId,
-            AVG(speed) * 3.6 AS speed
-        FROM speed_table
-        WHERE speed > 0
-        GROUP BY local_time, lineId, pointId
-        """
-    ).df()
+                AVG(speed) * 3.6 AS speed
+            FROM speed_table
+            WHERE speed > 0
+            GROUP BY local_time, lineId, pointId
+            """
+        ).df()
+    finally:
+        con.close()
 
     if df.empty:
         return pd.DataFrame(columns=["local_time", "lineId", "pointId", "speed"])
@@ -428,59 +432,132 @@ def fetch_raw_bucket_speeds(
     return df
 
 
-def fetch_segment_snapshot_for_bucket(
+def group_bucket_times_for_compact_fetch(
+    bucket_times: list[pd.Timestamp],
+) -> list[tuple[pd.Timestamp, pd.Timestamp, list[pd.Timestamp]]]:
+    """
+    Group target buckets into compact fetch windows instead of one large multi-week range.
+    """
+    if not bucket_times:
+        return []
+
+    sorted_times = sorted(pd.Timestamp(value) for value in bucket_times)
+
+    groups: list[list[pd.Timestamp]] = []
+    current_group: list[pd.Timestamp] = [sorted_times[0]]
+
+    for value in sorted_times[1:]:
+        previous = current_group[-1]
+
+        if value - previous <= pd.Timedelta(hours=2):
+            current_group.append(value)
+        else:
+            groups.append(current_group)
+            current_group = [value]
+
+    groups.append(current_group)
+
+    windows: list[tuple[pd.Timestamp, pd.Timestamp, list[pd.Timestamp]]] = []
+    for group in groups:
+        start = min(group) - pd.Timedelta(minutes=PARQUET_MARGIN_MINUTES)
+        end = max(group) + pd.Timedelta(minutes=PARQUET_BUCKET_MINUTES)
+        windows.append((start, end, group))
+
+    return windows
+
+
+def fetch_segment_snapshots_for_multiple_buckets(
     token: str,
     gpkg_path: str,
-    bucket_time: pd.Timestamp,
-) -> pd.Series:
+    bucket_times: list[pd.Timestamp],
+) -> tuple[pd.DataFrame, dict[str, Any]]:
     """
-    Fetch one 15-minute historical STIB bucket and convert it to
-    segment_id -> speed_kmh using the same start_id + lineId mapping pattern
-    used in the training project.
+    Fetch several compact windows instead of one large multi-week window.
+
+    Returns
+    -------
+    tuple[pd.DataFrame, dict]
+        DataFrame:
+            Index: segment_id
+            Columns: bucket_time (Timestamp)
+            Values: historical speed in km/h
+        Diagnostics:
+            metadata about grouped fetch windows
     """
+    if not bucket_times:
+        return pd.DataFrame(), {
+            "historical_fetch_group_count": 0,
+            "historical_fetch_windows": [],
+        }
+
     lookup_df = build_segment_lookup_from_gpkg(gpkg_path)
+    grouped_windows = group_bucket_times_for_compact_fetch(bucket_times)
 
-    window_start = bucket_time - pd.Timedelta(minutes=PARQUET_MARGIN_MINUTES)
-    window_end = bucket_time + pd.Timedelta(minutes=PARQUET_BUCKET_MINUTES)
+    merged_frames: list[pd.DataFrame] = []
+    fetch_windows = [
+        {
+            "start": window_start.isoformat(),
+            "end": window_end.isoformat(),
+            "bucket_count": len(bucket_group),
+        }
+        for window_start, window_end, bucket_group in grouped_windows
+    ]
 
-    raw_speed_df = fetch_raw_bucket_speeds(
-        token=token,
-        window_start=window_start,
-        window_end=window_end,
-    )
+    for window_start, window_end, bucket_group in grouped_windows:
+        raw_speed_df = fetch_raw_bucket_speeds(
+            token=token,
+            window_start=window_start,
+            window_end=window_end,
+        )
 
-    if raw_speed_df.empty:
-        return pd.Series(dtype="float32")
+        if raw_speed_df.empty:
+            continue
 
-    bucket_speed_df = raw_speed_df.loc[
-        raw_speed_df["local_time"] == pd.Timestamp(bucket_time)
-    ].copy()
+        filtered_df = raw_speed_df.loc[
+            raw_speed_df["local_time"].isin(bucket_group)
+        ].copy()
 
-    if bucket_speed_df.empty:
-        return pd.Series(dtype="float32")
+        if filtered_df.empty:
+            continue
 
-    merged_df = pd.merge(
-        bucket_speed_df,
-        lookup_df,
-        on=["pointId", "lineId"],
-        how="inner",
-    )
+        joined_df = pd.merge(
+            filtered_df,
+            lookup_df,
+            on=["pointId", "lineId"],
+            how="inner",
+        )
 
-    if merged_df.empty:
-        return pd.Series(dtype="float32")
+        if joined_df.empty:
+            continue
+
+        merged_frames.append(joined_df)
+
+    if not merged_frames:
+        return pd.DataFrame(index=pd.Index([], name="segment_id")), {
+            "historical_fetch_group_count": len(grouped_windows),
+            "historical_fetch_windows": fetch_windows,
+        }
+
+    merged_df = pd.concat(merged_frames, ignore_index=True)
 
     segment_df = (
-        merged_df.groupby("segment_id", as_index=False)["speed"]
+        merged_df.groupby(["segment_id", "local_time"], as_index=False)["speed"]
         .mean()
         .rename(columns={"speed": "historical_speed_kmh"})
     )
 
-    series = (
-        segment_df.set_index("segment_id")["historical_speed_kmh"]
-        .sort_index()
-        .astype("float32")
-    )
-    return series
+    pivot_df = segment_df.pivot(
+        index="segment_id",
+        columns="local_time",
+        values="historical_speed_kmh",
+    ).sort_index()
+
+    pivot_df.index = pivot_df.index.astype(str)
+
+    return pivot_df, {
+        "historical_fetch_group_count": len(grouped_windows),
+        "historical_fetch_windows": fetch_windows,
+    }
 
 
 def build_historical_feature_matrix(
@@ -492,7 +569,7 @@ def build_historical_feature_matrix(
     plan = build_historical_window_plan(snapshot_time)
     bucket_times = [bucket_time for _, bucket_time in plan]
 
-    bucket_matrix = fetch_segment_snapshots_for_multiple_buckets(
+    bucket_matrix, fetch_meta = fetch_segment_snapshots_for_multiple_buckets(
         token=token,
         gpkg_path=gpkg_path,
         bucket_times=bucket_times,
@@ -509,7 +586,10 @@ def build_historical_feature_matrix(
         else:
             aligned_series = pd.Series(index=ordered_segment_ids, dtype="float32")
 
-        historical_df[label] = pd.to_numeric(aligned_series, errors="coerce").astype("float32")
+        historical_df[label] = pd.to_numeric(
+            aligned_series,
+            errors="coerce",
+        ).astype("float32")
         non_null_counts[label] = int(historical_df[label].notna().sum())
 
     diagnostics = {
@@ -517,6 +597,7 @@ def build_historical_feature_matrix(
         "historical_window_labels": [label for label, _ in plan],
         "historical_window_times": [bucket.isoformat() for _, bucket in plan],
         "historical_non_null_counts": non_null_counts,
+        **fetch_meta,
     }
 
     return historical_df, diagnostics
@@ -628,8 +709,9 @@ def run_tmp_model_inference(
             historical_df=historical_df,
             fallback_series=base_snapshot_series,
         )
-    except Exception:
+    except Exception as exc:
         diagnostics["used_fallback_window"] = True
+        diagnostics["error_message"] = f"Historical feature extraction failed: {exc}"
 
         plan = build_historical_window_plan(snapshot_time)
         fallback_df = pd.DataFrame(index=ordered_segment_ids)
@@ -668,6 +750,7 @@ def run_tmp_model_inference(
     prediction_df["est_speed"] = prediction_df["est_speed"].clip(lower=0)
 
     return prediction_df, diagnostics
+
 
 def attach_tmp_estimated_speeds(
     gdf: pd.DataFrame,
@@ -711,71 +794,3 @@ def attach_tmp_estimated_speeds(
     diagnostics["matched_segments"] = int(result["est_speed"].notna().sum())
 
     return result, diagnostics
-
-def fetch_segment_snapshots_for_multiple_buckets(
-    token: str,
-    gpkg_path: str,
-    bucket_times: list[pd.Timestamp],
-) -> pd.DataFrame:
-    """
-    Fetch one large historical window once, then derive all required bucket-level
-    segment speed snapshots from that single dataset.
-
-    Returns
-    -------
-    pd.DataFrame
-        Index: segment_id
-        Columns: bucket_time (Timestamp)
-        Values: historical speed in km/h
-    """
-    if not bucket_times:
-        return pd.DataFrame()
-
-    lookup_df = build_segment_lookup_from_gpkg(gpkg_path)
-
-    min_bucket = min(bucket_times)
-    max_bucket = max(bucket_times)
-
-    window_start = min_bucket - pd.Timedelta(minutes=PARQUET_MARGIN_MINUTES)
-    window_end = max_bucket + pd.Timedelta(minutes=PARQUET_BUCKET_MINUTES)
-
-    raw_speed_df = fetch_raw_bucket_speeds(
-        token=token,
-        window_start=window_start,
-        window_end=window_end,
-    )
-
-    if raw_speed_df.empty:
-        return pd.DataFrame(index=pd.Index([], name="segment_id"))
-
-    filtered_df = raw_speed_df.loc[
-        raw_speed_df["local_time"].isin(bucket_times)
-    ].copy()
-
-    if filtered_df.empty:
-        return pd.DataFrame(index=pd.Index([], name="segment_id"))
-
-    merged_df = pd.merge(
-        filtered_df,
-        lookup_df,
-        on=["pointId", "lineId"],
-        how="inner",
-    )
-
-    if merged_df.empty:
-        return pd.DataFrame(index=pd.Index([], name="segment_id"))
-
-    segment_df = (
-        merged_df.groupby(["segment_id", "local_time"], as_index=False)["speed"]
-        .mean()
-        .rename(columns={"speed": "historical_speed_kmh"})
-    )
-
-    pivot_df = segment_df.pivot(
-        index="segment_id",
-        columns="local_time",
-        values="historical_speed_kmh",
-    ).sort_index()
-
-    pivot_df.index = pivot_df.index.astype(str)
-    return pivot_df
