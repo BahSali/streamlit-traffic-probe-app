@@ -273,7 +273,7 @@ def get_completed_snapshot_for_ui(refresh_key: int) -> pd.DataFrame:
         interpolation_method="latest",
     )
 
-@st.cache_data(show_spinner=False, ttl=90)
+
 def prepare_three_map_geojson(
     colorized: bool,
     selected_segment_names: tuple[str, ...],
