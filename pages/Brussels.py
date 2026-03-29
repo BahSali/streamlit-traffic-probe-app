@@ -125,14 +125,13 @@ def get_filter_options():
     return segment_options, bus_id_options
 
 
-def get_selected_map_fids(
+def get_selected_mask(
     gdf: pd.DataFrame,
     selected_segment_names: list[str],
     selected_bus_ids: list[str],
-) -> set[int]:
+) -> pd.Series:
     """
-    Resolve the selected segment names and bus IDs to map feature IDs.
-    Uses the already loaded map instead of loading it again.
+    Build a row mask for the selected Brussels subset.
     """
     selected_segment_names = {
         str(value).strip()
@@ -155,13 +154,29 @@ def get_selected_map_fids(
             lambda bus_list: any(bus_id in selected_bus_ids for bus_id in bus_list)
         )
 
+    return mask
+    
+def get_selected_map_fids(
+    gdf: pd.DataFrame,
+    selected_segment_names: list[str],
+    selected_bus_ids: list[str],
+) -> set[int]:
+    """
+    Resolve the selected segment names and bus IDs to map feature IDs.
+    Uses the already loaded map instead of loading it again.
+    """
+    mask = get_selected_mask(
+        gdf=gdf,
+        selected_segment_names=selected_segment_names,
+        selected_bus_ids=selected_bus_ids,
+    )
+
     selected_rows = gdf.loc[mask]
 
     if selected_rows.empty:
         return set()
 
     return set(selected_rows["map_fid"].astype(int).tolist())
-
 
 def get_live_stib_token() -> str | None:
     """
@@ -271,34 +286,14 @@ def get_completed_snapshot_for_ui(refresh_key: int) -> pd.DataFrame:
         interpolation_method="latest",
     )
 
-
-def prepare_google_proxy_columns(
-    gdf: pd.DataFrame,
-    colorized: bool,
-    selected_map_fids: set[int],
-) -> pd.DataFrame:
+def format_duration_seconds(value) -> str:
     """
-    Create placeholder Google speed columns without row-wise loops.
+    Format a duration value for display.
     """
-    result = gdf.copy()
+    if value is None or pd.isna(value):
+        return "N/A"
 
-    selected_mask = result["map_fid"].isin(selected_map_fids) if colorized else pd.Series(
-        False,
-        index=result.index,
-    )
-
-    google_speed_series = pd.Series(pd.NA, index=result.index, dtype="Float64")
-
-    if colorized and selected_mask.any():
-        generated_values = (
-            10 + (result.loc[selected_mask, "map_fid"].astype(int) * 6) % 45
-        ).astype(float)
-        google_speed_series.loc[selected_mask] = generated_values
-
-    result["google_speed"] = google_speed_series
-    result["google_color"] = result["google_speed"].apply(build_google_color)
-
-    return result
+    return f"{int(float(value))} s"
 
 
 def finalize_map_columns(gdf: pd.DataFrame) -> pd.DataFrame:
@@ -315,11 +310,14 @@ def finalize_map_columns(gdf: pd.DataFrame) -> pd.DataFrame:
 
     if "google_speed" not in result.columns:
         result["google_speed"] = pd.NA
-
+    if "google_duration_seconds" not in result.columns:
+        result["google_duration_seconds"] = pd.NA
+    
     result["bus_speed_str"] = result["bus_speed"].apply(format_speed)
     result["est_speed_str"] = result["est_speed"].apply(format_speed)
     result["google_speed_str"] = result["google_speed"].apply(format_speed)
-
+    result["google_duration_str"] = result["google_duration_seconds"].apply(format_duration_seconds)
+    
     result["bus_color"] = result["bus_speed"].apply(
         lambda value: get_speed_color(float(value))
         if value is not None and not pd.isna(value)
@@ -392,7 +390,21 @@ def prepare_brussels_page_payload(
 
     completed_snapshot_df = pd.DataFrame()
     enriched_snapshot_df = pd.DataFrame()
-
+    google_diagnostics = {
+        "selected_segment_count": 0,
+        "group_count": 0,
+        "request_count_planned": 0,
+        "request_count_sent": 0,
+        "success_count": 0,
+        "failure_count": 0,
+        "usage_month_key": None,
+        "usage_monthly_limit": GOOGLE_ROUTES_MONTHLY_LIMIT,
+        "usage_used_before_run": get_monthly_google_request_count(),
+        "usage_remaining_before_run": GOOGLE_ROUTES_MONTHLY_LIMIT - get_monthly_google_request_count(),
+        "was_requested": False,
+        "error_message": None,
+        "info_message": None,
+    }
     if colorized:
         gdf, diagnostics = attach_live_stib_bus_speeds(gdf)
 
@@ -412,9 +424,38 @@ def prepare_brussels_page_payload(
                     prediction_df=prediction_df,
                 )
                 estimation_diagnostics["matched_segments"] = matched_segments
-
+                
+                selected_mask = get_selected_mask(
+                    gdf=gdf,
+                    selected_segment_names=list(selected_segment_names),
+                    selected_bus_ids=list(selected_bus_ids),
+                )
+                selected_google_gdf = gdf.loc[selected_mask].copy()
+    
+                google_result = fetch_google_speeds_for_selected_segments(
+                    selected_gdf=selected_google_gdf,
+                    monthly_limit=GOOGLE_ROUTES_MONTHLY_LIMIT,
+                )
+    
+                google_results_df = google_result["google_results_df"]
+                google_diagnostics = google_result["diagnostics"]
+    
+                gdf = attach_google_results_to_map_gdf(
+                    gdf=gdf,
+                    google_results_df=google_results_df,
+                )
+    
+                enriched_snapshot_df = attach_google_results_to_snapshot_df(
+                    snapshot_df=enriched_snapshot_df,
+                    google_results_df=google_results_df,
+                )
+                
             except Exception as exc:
                 gdf["est_speed"] = pd.NA
+                gdf["google_speed"] = pd.NA
+                gdf["google_duration_seconds"] = pd.NA
+                gdf["google_speed"] = pd.NA
+                gdf["google_duration_seconds"] = pd.NA
                 estimation_diagnostics = {
                     "estimation_mode": "pt_inference_historical_tmp",
                     "snapshot_found": False,
@@ -444,12 +485,9 @@ def prepare_brussels_page_payload(
     else:
         gdf["bus_speed"] = pd.NA
         gdf["est_speed"] = pd.NA
+        gdf["google_speed"] = pd.NA
+        gdf["google_duration_seconds"] = pd.NA
 
-    gdf = prepare_google_proxy_columns(
-        gdf=gdf,
-        colorized=colorized,
-        selected_map_fids=selected_map_fids,
-    )
     gdf = finalize_map_columns(gdf)
 
     minx, miny, maxx, maxy = gdf.total_bounds
@@ -469,6 +507,7 @@ def prepare_brussels_page_payload(
         "estimation_diagnostics": estimation_diagnostics,
         "completed_snapshot_df": completed_snapshot_df,
         "enriched_snapshot_df": enriched_snapshot_df,
+        "google_diagnostics": google_diagnostics,
     }
 
 
@@ -679,14 +718,15 @@ def build_three_map_html(geojson_obj, center_lat, center_lon):
 
       const html = `
         <div>
-          <b>Segment:</b> ${{p.segment_name ?? 'N/A'}}<br>
-          <b>Bus lines:</b> ${{p.bus_lines_display ?? ''}}<br>
-          <b>Bus speed:</b> ${{p.bus_speed_str ?? 'N/A'}}<br>
-          <b>Estimated speed:</b> ${{p.est_speed_str ?? 'N/A'}}<br>
-          <b>Google-reported speed:</b>
-          <span class="metric-highlight" style="background:${{p.google_highlight_color ?? '#000000'}};">
-            ${{p.google_speed_str ?? 'N/A'}}
-          </span>
+            <b>Segment:</b> ${p.segment_name ?? 'N/A'}<br>
+            <b>Bus lines:</b> ${p.bus_lines_display ?? ''}<br>
+            <b>Bus speed:</b> ${p.bus_speed_str ?? 'N/A'}<br>
+            <b>Estimated speed:</b> ${p.est_speed_str ?? 'N/A'}<br>
+            <b>Google-reported speed:</b>
+            <span class="metric-highlight" style="background:${p.google_highlight_color ?? '#000000'};">
+              ${p.google_speed_str ?? 'N/A'}
+            </span><br>
+            <b>Google duration:</b> ${p.google_duration_str ?? 'N/A'}
         </div>
       `;
       layer.bindTooltip(html, {{
@@ -771,7 +811,8 @@ with content_box:
     diagnostics = payload["diagnostics"]
     estimation_diagnostics = payload.get("estimation_diagnostics", {})
     enriched_snapshot_df = payload.get("enriched_snapshot_df", pd.DataFrame())
-
+    google_diagnostics = payload.get("google_diagnostics", {})
+    
     if diagnostics["error_message"]:
         st.warning(diagnostics["error_message"])
 
@@ -802,9 +843,29 @@ with content_box:
             f"{estimation_diagnostics.get('historical_non_null_counts', {})}"
         )
 
+    if google_diagnostics:
+        st.caption(
+            "Google Routes diagnostics — "
+            f"requested: {'yes' if google_diagnostics.get('was_requested') else 'no'}, "
+            f"selected segments: {google_diagnostics.get('selected_segment_count', 0)}, "
+            f"groups: {google_diagnostics.get('group_count', 0)}, "
+            f"planned requests: {google_diagnostics.get('request_count_planned', 0)}, "
+            f"sent requests: {google_diagnostics.get('request_count_sent', 0)}, "
+            f"success: {google_diagnostics.get('success_count', 0)}, "
+            f"failure: {google_diagnostics.get('failure_count', 0)}, "
+            f"monthly used before run: {google_diagnostics.get('usage_used_before_run', 0)}, "
+            f"monthly remaining before run: {google_diagnostics.get('usage_remaining_before_run', 0)}, "
+            f"monthly limit: {google_diagnostics.get('usage_monthly_limit', GOOGLE_ROUTES_MONTHLY_LIMIT)}"
+        )
     if estimation_diagnostics.get("error_message"):
         st.warning(estimation_diagnostics["error_message"])
 
+    if google_diagnostics.get("info_message"):
+        st.info(google_diagnostics["info_message"])
+
+    if google_diagnostics.get("error_message"):
+        st.warning(google_diagnostics["error_message"])
+        
     html = build_three_map_html(
         payload["geojson"],
         payload["center_lat"],
@@ -835,6 +896,6 @@ with content_box:
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Colorized", "Yes" if st.session_state["brussels_colorized"] else "No")
-    col2.metric("Google-colored segments", payload["selected_google_count"])
+    col2.metric("Google-speed segments", payload["selected_google_count"])
     col3.metric("Map segments", payload["segment_count"])
     col4.metric("Live STIB segments", payload["live_bus_count"])
