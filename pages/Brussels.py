@@ -317,7 +317,7 @@ def finalize_map_columns(gdf: pd.DataFrame) -> pd.DataFrame:
         if value is not None and not pd.isna(value)
         else build_dark_fallback_color()
     )
-
+    result["google_color"] = result["google_speed"].apply(build_google_color)
     result["bus_highlight_color"] = result["bus_speed"].apply(
         lambda value: get_speed_color(float(value))
         if value is not None and not pd.isna(value)
