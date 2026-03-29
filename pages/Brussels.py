@@ -454,8 +454,6 @@ def prepare_brussels_page_payload(
                 gdf["est_speed"] = pd.NA
                 gdf["google_speed"] = pd.NA
                 gdf["google_duration_seconds"] = pd.NA
-                gdf["google_speed"] = pd.NA
-                gdf["google_duration_seconds"] = pd.NA
                 estimation_diagnostics = {
                     "estimation_mode": "pt_inference_historical_tmp",
                     "snapshot_found": False,
@@ -611,7 +609,7 @@ def build_three_map_html(geojson_obj, center_lat, center_lon):
     <div class="titles">
       <div>Observed Bus-Derived Speeds (STIB)</div>
       <div>Model-Derived Street Speed Estimates</div>
-      <div>Google Routes API-Derived Speed Proxy</div>
+      <div>Google Routes API-Derived Speeds</div>
     </div>
     <div class="maps">
       <div id="map1" class="map"></div>
@@ -718,15 +716,15 @@ def build_three_map_html(geojson_obj, center_lat, center_lon):
 
       const html = `
         <div>
-            <b>Segment:</b> ${p.segment_name ?? 'N/A'}<br>
-            <b>Bus lines:</b> ${p.bus_lines_display ?? ''}<br>
-            <b>Bus speed:</b> ${p.bus_speed_str ?? 'N/A'}<br>
-            <b>Estimated speed:</b> ${p.est_speed_str ?? 'N/A'}<br>
-            <b>Google-reported speed:</b>
-            <span class="metric-highlight" style="background:${p.google_highlight_color ?? '#000000'};">
-              ${p.google_speed_str ?? 'N/A'}
-            </span><br>
-            <b>Google duration:</b> ${p.google_duration_str ?? 'N/A'}
+          <b>Segment:</b> ${{p.segment_name ?? 'N/A'}}<br>
+          <b>Bus lines:</b> ${{p.bus_lines_display ?? ''}}<br>
+          <b>Bus speed:</b> ${{p.bus_speed_str ?? 'N/A'}}<br>
+          <b>Estimated speed:</b> ${{p.est_speed_str ?? 'N/A'}}<br>
+          <b>Google-reported speed:</b>
+          <span class="metric-highlight" style="background:${{p.google_highlight_color ?? '#000000'}};">
+            ${{p.google_speed_str ?? 'N/A'}}
+          </span><br>
+          <b>Google duration:</b> ${{p.google_duration_str ?? 'N/A'}}
         </div>
       `;
       layer.bindTooltip(html, {{
