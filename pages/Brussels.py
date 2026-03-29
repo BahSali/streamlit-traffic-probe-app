@@ -892,8 +892,18 @@ with content_box:
     st.markdown("---")
     st.markdown("### Overview")
 
+    google_used = google_diagnostics.get("usage_used_before_run", 0)
+    google_remaining = google_diagnostics.get(
+        "usage_remaining_before_run",
+        GOOGLE_ROUTES_MONTHLY_LIMIT,
+    )
+    google_limit = google_diagnostics.get(
+        "usage_monthly_limit",
+        GOOGLE_ROUTES_MONTHLY_LIMIT,
+    )
+    
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Colorized", "Yes" if st.session_state["brussels_colorized"] else "No")
-    col2.metric("Google-speed segments", payload["selected_google_count"])
-    col3.metric("Map segments", payload["segment_count"])
+    col1.metric("Google used", google_used)
+    col2.metric("Google left", google_remaining)
+    col3.metric("Google-speed segments", payload["selected_google_count"])
     col4.metric("Live STIB segments", payload["live_bus_count"])
