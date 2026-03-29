@@ -20,7 +20,6 @@ PARQUET_COMPONENT = "stib_vehicle_distance_parquetize"
 PARQUET_MARGIN_MINUTES = 30
 PARQUET_BUCKET_MINUTES = 15
 REQUEST_TIMEOUT_SECONDS = 45
-MODEL_FILENAME = "cnn_trained model.pt"
 
 
 class RefinerCNN(nn.Module):
@@ -29,6 +28,7 @@ class RefinerCNN(nn.Module):
 
     Input:
         x: [B, W, S]
+
     Output:
         y_hat: [B, S]
     """
@@ -180,6 +180,7 @@ def build_historical_window_plan(snapshot_time: pd.Timestamp) -> list[tuple[str,
 def prepare_snapshot_series(completed_snapshot_df: pd.DataFrame) -> pd.Series:
     required_columns = {"segment_id", "final_speed_kmh"}
     missing_columns = required_columns - set(completed_snapshot_df.columns)
+
     if missing_columns:
         raise ValueError(
             f"Completed snapshot is missing required columns: {sorted(missing_columns)}"
@@ -193,8 +194,7 @@ def prepare_snapshot_series(completed_snapshot_df: pd.DataFrame) -> pd.Series:
     )
 
     series = (
-        working_df
-        .drop_duplicates(subset=["segment_id"], keep="last")
+        working_df.drop_duplicates(subset=["segment_id"], keep="last")
         .set_index("segment_id")["final_speed_kmh"]
         .sort_index()
         .fillna(0.0)
@@ -205,7 +205,7 @@ def prepare_snapshot_series(completed_snapshot_df: pd.DataFrame) -> pd.Series:
 
 
 def resolve_checkpoint_path() -> Path:
-    return Path(__file__).resolve().parent / MODEL_FILENAME
+    return Path(__file__).resolve().parent / "cnn_trained model.pt"
 
 
 def load_checkpoint(path: Path) -> tuple[dict[str, Any], str]:
@@ -246,12 +246,6 @@ def infer_model_config(
     gate_bias_tensor = state_dict.get("gate_bias", None)
     enforce_nonneg = gate_bias_tensor is None
 
-    if inferred_num_streets != num_streets:
-        raise ValueError(
-            "Current snapshot size does not match checkpoint street count. "
-            f"current={inferred_num_streets} checkpoint={num_streets}"
-        )
-
     return {
         "window_size": window_size,
         "num_streets": num_streets,
@@ -259,6 +253,7 @@ def infer_model_config(
         "topk": 4,
         "delta_scale": 5.0,
         "enforce_nonneg": enforce_nonneg,
+        "inferred_num_streets": inferred_num_streets,
     }
 
 
@@ -287,21 +282,30 @@ def build_model_from_checkpoint(
 
 
 @st.cache_resource(show_spinner=False)
-def get_cached_model_bundle(num_streets: int) -> tuple[nn.Module, dict[str, Any], str, str]:
+def load_model_bundle(checkpoint_path_str: str) -> tuple[nn.Module, dict[str, Any], str]:
     """
-    Load the checkpoint and construct the model only once per street-count configuration.
+    Load the PyTorch checkpoint and build the model exactly once per process.
     """
-    checkpoint_path = resolve_checkpoint_path()
+    checkpoint_path = Path(checkpoint_path_str)
+
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Model file was not found at: {checkpoint_path}")
 
     checkpoint, checkpoint_type = load_checkpoint(checkpoint_path)
     model, config = build_model_from_checkpoint(
         checkpoint=checkpoint,
-        inferred_num_streets=num_streets,
+        inferred_num_streets=int(config_placeholder_num_streets()),
     )
 
-    return model, config, str(checkpoint_path), checkpoint_type
+    return model, config, checkpoint_type
+
+
+def config_placeholder_num_streets() -> int:
+    """
+    Dummy value only used because build_model_from_checkpoint requires an integer.
+    The real checkpoint architecture still comes from checkpoint weights/metadata.
+    """
+    return 1
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
@@ -310,6 +314,7 @@ def build_segment_lookup_from_gpkg(gpkg_path: str) -> pd.DataFrame:
 
     required_columns = {"id", "start_id", "bus_lines"}
     missing_columns = required_columns - set(gdf.columns)
+
     if missing_columns:
         raise ValueError(
             f"GPKG is missing required columns for historical mapping: {sorted(missing_columns)}"
@@ -363,14 +368,16 @@ def download_and_concatenate_parquets(url_list: list[str]) -> pa.Table:
     return arrow_table
 
 
-@st.cache_data(show_spinner=False, ttl=90)
+@st.cache_data(show_spinner=False, ttl=300)
 def fetch_raw_bucket_speeds(
     token: str,
     window_start_iso: str,
     window_end_iso: str,
 ) -> pd.DataFrame:
     """
-    Cached network/data-fetch layer for one compact historical window.
+    Fetch raw bucketed speeds for one compact time window.
+
+    This is cached because the same windows are often requested again during reruns.
     """
     window_start = pd.Timestamp(window_start_iso)
     window_end = pd.Timestamp(window_end_iso)
@@ -505,7 +512,7 @@ def group_bucket_times_for_compact_fetch(
     return windows
 
 
-@st.cache_data(show_spinner=False, ttl=90)
+@st.cache_data(show_spinner=False, ttl=300)
 def fetch_segment_snapshots_for_multiple_buckets(
     token: str,
     gpkg_path: str,
@@ -521,16 +528,15 @@ def fetch_segment_snapshots_for_multiple_buckets(
             Index: segment_id
             Columns: bucket_time (Timestamp)
             Values: historical speed in km/h
-        Diagnostics:
-            metadata about grouped fetch windows
     """
-    if not bucket_time_isos:
+    bucket_times = [pd.Timestamp(value) for value in bucket_time_isos]
+
+    if not bucket_times:
         return pd.DataFrame(), {
             "historical_fetch_group_count": 0,
             "historical_fetch_windows": [],
         }
 
-    bucket_times = [pd.Timestamp(value) for value in bucket_time_isos]
     lookup_df = build_segment_lookup_from_gpkg(gpkg_path)
     grouped_windows = group_bucket_times_for_compact_fetch(bucket_times)
 
@@ -601,38 +607,37 @@ def fetch_segment_snapshots_for_multiple_buckets(
     }
 
 
-@st.cache_data(show_spinner=False, ttl=90)
 def build_historical_feature_matrix(
     token: str,
     gpkg_path: str,
-    snapshot_time_iso: str,
-    ordered_segment_ids: tuple[str, ...],
+    snapshot_time: pd.Timestamp,
+    ordered_segment_ids: list[str],
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
-    snapshot_time = pd.Timestamp(snapshot_time_iso)
     plan = build_historical_window_plan(snapshot_time)
-    bucket_time_isos = tuple(bucket_time.isoformat() for _, bucket_time in plan)
+    bucket_times = [bucket_time for _, bucket_time in plan]
 
     bucket_matrix, fetch_meta = fetch_segment_snapshots_for_multiple_buckets(
         token=token,
         gpkg_path=gpkg_path,
-        bucket_time_isos=bucket_time_isos,
+        bucket_time_isos=tuple(bucket.isoformat() for bucket in bucket_times),
     )
 
-    historical_df = pd.DataFrame(index=list(ordered_segment_ids))
+    historical_df = pd.DataFrame(index=ordered_segment_ids)
     historical_df.index.name = "segment_id"
 
     non_null_counts: dict[str, int] = {}
 
     for label, bucket_time in plan:
         if bucket_time in bucket_matrix.columns:
-            aligned_series = bucket_matrix[bucket_time].reindex(list(ordered_segment_ids))
+            aligned_series = bucket_matrix[bucket_time].reindex(ordered_segment_ids)
         else:
-            aligned_series = pd.Series(index=list(ordered_segment_ids), dtype="float32")
+            aligned_series = pd.Series(index=ordered_segment_ids, dtype="float32")
 
         historical_df[label] = pd.to_numeric(
             aligned_series,
             errors="coerce",
         ).astype("float32")
+
         non_null_counts[label] = int(historical_df[label].notna().sum())
 
     diagnostics = {
@@ -681,41 +686,68 @@ def build_model_input_window_from_historical(historical_df: pd.DataFrame) -> tor
 
 
 @st.cache_data(show_spinner=False, ttl=90)
-def run_tmp_model_inference_cached(
-    snapshot_time_iso: str,
-    ordered_segment_ids: tuple[str, ...],
-    base_snapshot_values: tuple[float, ...],
+def run_tmp_model_inference(
+    completed_snapshot_df: pd.DataFrame,
     token: str,
     gpkg_path: str,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """
+    Run the full TMP estimation pipeline once per snapshot content.
+    """
     diagnostics = build_empty_estimation_diagnostics()
-    diagnostics["snapshot_found"] = True
-    diagnostics["snapshot_time"] = snapshot_time_iso
-    diagnostics["snapshot_bucket_time"] = floor_to_15_minutes(pd.Timestamp(snapshot_time_iso)).isoformat()
-    diagnostics["prepared_snapshot_size"] = len(ordered_segment_ids)
-    diagnostics["prepared_snapshot_null_count"] = 0
 
-    base_snapshot_series = pd.Series(
-        data=list(base_snapshot_values),
-        index=list(ordered_segment_ids),
-        dtype="float32",
+    if completed_snapshot_df.empty:
+        diagnostics["error_message"] = "Completed STIB snapshot is empty."
+        return pd.DataFrame(columns=["segment_id", "est_speed"]), diagnostics
+
+    snapshot_time = get_snapshot_timestamp(completed_snapshot_df)
+    diagnostics["snapshot_found"] = snapshot_time is not None
+    diagnostics["snapshot_time"] = (
+        snapshot_time.isoformat() if snapshot_time is not None else None
     )
 
-    model, config, model_path, checkpoint_type = get_cached_model_bundle(
-        num_streets=len(ordered_segment_ids)
-    )
+    if snapshot_time is None:
+        diagnostics["error_message"] = "Snapshot time could not be extracted."
+        return pd.DataFrame(columns=["segment_id", "est_speed"]), diagnostics
 
-    diagnostics["model_loaded"] = True
-    diagnostics["model_path"] = model_path
+    diagnostics["snapshot_bucket_time"] = floor_to_15_minutes(snapshot_time).isoformat()
+    diagnostics["raw_snapshot_rows"] = int(len(completed_snapshot_df))
+
+    base_snapshot_series = prepare_snapshot_series(completed_snapshot_df)
+    diagnostics["prepared_snapshot_size"] = int(len(base_snapshot_series))
+    diagnostics["prepared_snapshot_null_count"] = int(base_snapshot_series.isna().sum())
+
+    if base_snapshot_series.empty:
+        diagnostics["error_message"] = "No valid final_speed_kmh values were found."
+        return pd.DataFrame(columns=["segment_id", "est_speed"]), diagnostics
+
+    checkpoint_path = resolve_checkpoint_path()
+    diagnostics["model_path"] = str(checkpoint_path)
+
+    try:
+        model, config, checkpoint_type = load_model_bundle(str(checkpoint_path))
+    except Exception as exc:
+        diagnostics["error_message"] = f"Model load failed: {exc}"
+        return pd.DataFrame(columns=["segment_id", "est_speed"]), diagnostics
+
     diagnostics["checkpoint_type"] = checkpoint_type
+    diagnostics["model_loaded"] = True
     diagnostics["window_size"] = int(config["window_size"])
     diagnostics["num_streets"] = int(config["num_streets"])
+
+    ordered_segment_ids = list(base_snapshot_series.index.astype(str))
+
+    if len(ordered_segment_ids) != int(config["num_streets"]):
+        raise ValueError(
+            "Current snapshot size does not match checkpoint street count. "
+            f"current={len(ordered_segment_ids)} checkpoint={config['num_streets']}"
+        )
 
     try:
         historical_df, historical_meta = build_historical_feature_matrix(
             token=token,
             gpkg_path=gpkg_path,
-            snapshot_time_iso=snapshot_time_iso,
+            snapshot_time=snapshot_time,
             ordered_segment_ids=ordered_segment_ids,
         )
         diagnostics.update(historical_meta)
@@ -728,8 +760,8 @@ def run_tmp_model_inference_cached(
         diagnostics["used_fallback_window"] = True
         diagnostics["error_message"] = f"Historical feature extraction failed: {exc}"
 
-        plan = build_historical_window_plan(pd.Timestamp(snapshot_time_iso))
-        fallback_df = pd.DataFrame(index=list(ordered_segment_ids))
+        plan = build_historical_window_plan(snapshot_time)
+        fallback_df = pd.DataFrame(index=ordered_segment_ids)
 
         for label, _ in plan:
             fallback_df[label] = base_snapshot_series
@@ -751,12 +783,12 @@ def run_tmp_model_inference_cached(
     x = build_model_input_window_from_historical(historical_df)
     diagnostics["input_shape"] = tuple(int(v) for v in x.shape)
 
-    with torch.no_grad():
+    with torch.inference_mode():
         y_hat = model(x).squeeze(0).detach().cpu().numpy()
 
     prediction_df = pd.DataFrame(
         {
-            "segment_id": list(ordered_segment_ids),
+            "segment_id": ordered_segment_ids,
             "est_speed": y_hat,
         }
     )
@@ -767,77 +799,22 @@ def run_tmp_model_inference_cached(
     return prediction_df, diagnostics
 
 
-def run_tmp_model_inference(
-    completed_snapshot_df: pd.DataFrame,
-    token: str,
-    gpkg_path: str,
-) -> tuple[pd.DataFrame, dict[str, Any]]:
-    diagnostics = build_empty_estimation_diagnostics()
-
-    if completed_snapshot_df.empty:
-        diagnostics["error_message"] = "Completed STIB snapshot is empty."
-        return pd.DataFrame(columns=["segment_id", "est_speed"]), diagnostics
-
-    snapshot_time = get_snapshot_timestamp(completed_snapshot_df)
-    diagnostics["snapshot_found"] = snapshot_time is not None
-    diagnostics["snapshot_time"] = (
-        snapshot_time.isoformat() if snapshot_time is not None else None
-    )
-    diagnostics["raw_snapshot_rows"] = int(len(completed_snapshot_df))
-
-    if snapshot_time is None:
-        diagnostics["error_message"] = "Snapshot time could not be extracted."
-        return pd.DataFrame(columns=["segment_id", "est_speed"]), diagnostics
-
-    base_snapshot_series = prepare_snapshot_series(completed_snapshot_df)
-    diagnostics["prepared_snapshot_size"] = int(len(base_snapshot_series))
-    diagnostics["prepared_snapshot_null_count"] = int(base_snapshot_series.isna().sum())
-
-    if base_snapshot_series.empty:
-        diagnostics["error_message"] = "No valid final_speed_kmh values were found."
-        return pd.DataFrame(columns=["segment_id", "est_speed"]), diagnostics
-
-    prediction_df, cached_diagnostics = run_tmp_model_inference_cached(
-        snapshot_time_iso=snapshot_time.isoformat(),
-        ordered_segment_ids=tuple(base_snapshot_series.index.astype(str).tolist()),
-        base_snapshot_values=tuple(float(value) for value in base_snapshot_series.tolist()),
-        token=token,
-        gpkg_path=gpkg_path,
-    )
-
-    cached_diagnostics["raw_snapshot_rows"] = int(len(completed_snapshot_df))
-    return prediction_df, cached_diagnostics
-
-
-def attach_tmp_estimated_speeds(
+def attach_prediction_df_to_gdf(
     gdf: pd.DataFrame,
-    completed_snapshot_df: pd.DataFrame,
-    token: str,
-    gpkg_path: str,
-) -> tuple[pd.DataFrame, dict[str, Any]]:
+    prediction_df: pd.DataFrame,
+) -> tuple[pd.DataFrame, int]:
+    """
+    Attach an already computed prediction DataFrame to a map GeoDataFrame.
+    """
     result = gdf.copy()
-    diagnostics = build_empty_estimation_diagnostics()
-    diagnostics["map_has_id_column"] = "id" in result.columns
 
     if "id" not in result.columns:
-        diagnostics["error_message"] = "The Brussels map file does not contain an 'id' column."
         result["est_speed"] = pd.NA
-        return result, diagnostics
-
-    try:
-        prediction_df, diagnostics = run_tmp_model_inference(
-            completed_snapshot_df=completed_snapshot_df,
-            token=token,
-            gpkg_path=gpkg_path,
-        )
-    except Exception as exc:
-        diagnostics["error_message"] = f"PT inference failed: {exc}"
-        result["est_speed"] = pd.NA
-        return result, diagnostics
+        return result, 0
 
     if prediction_df.empty:
         result["est_speed"] = pd.NA
-        return result, diagnostics
+        return result, 0
 
     lookup = dict(
         zip(
@@ -848,9 +825,9 @@ def attach_tmp_estimated_speeds(
 
     result["segment_id_str"] = result["id"].astype(str).str.strip()
     result["est_speed"] = result["segment_id_str"].map(lookup)
-    diagnostics["matched_segments"] = int(result["est_speed"].notna().sum())
+    matched_segments = int(result["est_speed"].notna().sum())
 
-    return result, diagnostics
+    return result, matched_segments
 
 
 def attach_estimated_speed_to_snapshot(
@@ -887,15 +864,20 @@ def attach_estimated_speed_to_snapshot(
     return merged
 
 
-@st.cache_data(show_spinner=False, ttl=90)
-def enrich_snapshot_with_estimation(
+def build_estimation_artifacts(
     completed_snapshot_df: pd.DataFrame,
     token: str,
     gpkg_path: str,
-) -> tuple[pd.DataFrame, dict[str, Any]]:
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
     """
-    Full pipeline:
-        snapshot -> model -> merged snapshot with estimated_speed
+    Single entry point for TMP estimation.
+
+    Returns
+    -------
+    tuple[pd.DataFrame, pd.DataFrame, dict]
+        prediction_df,
+        enriched_snapshot_df,
+        diagnostics
     """
     prediction_df, diagnostics = run_tmp_model_inference(
         completed_snapshot_df=completed_snapshot_df,
@@ -906,6 +888,63 @@ def enrich_snapshot_with_estimation(
     enriched_df = attach_estimated_speed_to_snapshot(
         completed_snapshot_df=completed_snapshot_df,
         prediction_df=prediction_df,
+    )
+
+    return prediction_df, enriched_df, diagnostics
+
+
+def attach_tmp_estimated_speeds(
+    gdf: pd.DataFrame,
+    completed_snapshot_df: pd.DataFrame,
+    token: str,
+    gpkg_path: str,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """
+    Backward-compatible wrapper used by the Brussels page.
+    """
+    result = gdf.copy()
+    diagnostics = build_empty_estimation_diagnostics()
+    diagnostics["map_has_id_column"] = "id" in result.columns
+
+    if "id" not in result.columns:
+        diagnostics["error_message"] = "The Brussels map file does not contain an 'id' column."
+        result["est_speed"] = pd.NA
+        return result, diagnostics
+
+    try:
+        prediction_df, _, diagnostics = build_estimation_artifacts(
+            completed_snapshot_df=completed_snapshot_df,
+            token=token,
+            gpkg_path=gpkg_path,
+        )
+    except Exception as exc:
+        diagnostics["error_message"] = f"PT inference failed: {exc}"
+        result["est_speed"] = pd.NA
+        return result, diagnostics
+
+    result, matched_segments = attach_prediction_df_to_gdf(
+        gdf=result,
+        prediction_df=prediction_df,
+    )
+    diagnostics["matched_segments"] = matched_segments
+
+    return result, diagnostics
+
+
+@st.cache_data(show_spinner=False, ttl=90)
+def enrich_snapshot_with_estimation(
+    completed_snapshot_df: pd.DataFrame,
+    token: str,
+    gpkg_path: str,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """
+    Full pipeline:
+        snapshot -> model -> merged snapshot with estimated_speed
+    """
+    _, enriched_df, diagnostics = build_estimation_artifacts(
+        completed_snapshot_df=completed_snapshot_df,
+        token=token,
+        gpkg_path=gpkg_path,
     )
 
     return enriched_df, diagnostics
