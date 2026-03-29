@@ -733,7 +733,6 @@ with content_box:
     diagnostics = payload["diagnostics"]
     estimation_diagnostics = payload.get("estimation_diagnostics", {})
 
-    .
     completed_snapshot_df = pd.DataFrame()
 
     if st.session_state["brussels_colorized"]:
