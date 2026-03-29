@@ -20,6 +20,7 @@ PARQUET_COMPONENT = "stib_vehicle_distance_parquetize"
 PARQUET_MARGIN_MINUTES = 30
 PARQUET_BUCKET_MINUTES = 15
 REQUEST_TIMEOUT_SECONDS = 45
+MODEL_FILENAME = "cnn_trained model.pt"
 
 
 class RefinerCNN(nn.Module):
@@ -204,7 +205,7 @@ def prepare_snapshot_series(completed_snapshot_df: pd.DataFrame) -> pd.Series:
 
 
 def resolve_checkpoint_path() -> Path:
-    return Path(__file__).resolve().parent / "cnn_trained model.pt"
+    return Path(__file__).resolve().parent / MODEL_FILENAME
 
 
 def load_checkpoint(path: Path) -> tuple[dict[str, Any], str]:
@@ -222,7 +223,10 @@ def load_checkpoint(path: Path) -> tuple[dict[str, Any], str]:
     raise TypeError(f"Unsupported checkpoint type: {type(checkpoint)!r}")
 
 
-def infer_model_config(checkpoint: dict[str, Any], inferred_num_streets: int) -> dict[str, Any]:
+def infer_model_config(
+    checkpoint: dict[str, Any],
+    inferred_num_streets: int,
+) -> dict[str, Any]:
     metadata = checkpoint.get("metadata", {}) or {}
     state_dict = checkpoint["model_state_dict"]
 
@@ -242,6 +246,12 @@ def infer_model_config(checkpoint: dict[str, Any], inferred_num_streets: int) ->
     gate_bias_tensor = state_dict.get("gate_bias", None)
     enforce_nonneg = gate_bias_tensor is None
 
+    if inferred_num_streets != num_streets:
+        raise ValueError(
+            "Current snapshot size does not match checkpoint street count. "
+            f"current={inferred_num_streets} checkpoint={num_streets}"
+        )
+
     return {
         "window_size": window_size,
         "num_streets": num_streets,
@@ -256,7 +266,10 @@ def build_model_from_checkpoint(
     checkpoint: dict[str, Any],
     inferred_num_streets: int,
 ) -> tuple[nn.Module, dict[str, Any]]:
-    config = infer_model_config(checkpoint, inferred_num_streets=inferred_num_streets)
+    config = infer_model_config(
+        checkpoint=checkpoint,
+        inferred_num_streets=inferred_num_streets,
+    )
 
     model = RefinerCNN(
         window=config["window_size"],
@@ -269,7 +282,26 @@ def build_model_from_checkpoint(
 
     model.load_state_dict(checkpoint["model_state_dict"], strict=True)
     model.eval()
+
     return model, config
+
+
+@st.cache_resource(show_spinner=False)
+def get_cached_model_bundle(num_streets: int) -> tuple[nn.Module, dict[str, Any], str, str]:
+    """
+    Load the checkpoint and construct the model only once per street-count configuration.
+    """
+    checkpoint_path = resolve_checkpoint_path()
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Model file was not found at: {checkpoint_path}")
+
+    checkpoint, checkpoint_type = load_checkpoint(checkpoint_path)
+    model, config = build_model_from_checkpoint(
+        checkpoint=checkpoint,
+        inferred_num_streets=num_streets,
+    )
+
+    return model, config, str(checkpoint_path), checkpoint_type
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
@@ -331,13 +363,20 @@ def download_and_concatenate_parquets(url_list: list[str]) -> pa.Table:
     return arrow_table
 
 
+@st.cache_data(show_spinner=False, ttl=90)
 def fetch_raw_bucket_speeds(
     token: str,
-    window_start: pd.Timestamp,
-    window_end: pd.Timestamp,
+    window_start_iso: str,
+    window_end_iso: str,
 ) -> pd.DataFrame:
-    start_ts = float(pd.Timestamp(window_start).timestamp())
-    end_ts = float(pd.Timestamp(window_end).timestamp())
+    """
+    Cached network/data-fetch layer for one compact historical window.
+    """
+    window_start = pd.Timestamp(window_start_iso)
+    window_end = pd.Timestamp(window_end_iso)
+
+    start_ts = float(window_start.timestamp())
+    end_ts = float(window_end.timestamp())
 
     response = auth_request(
         (
@@ -466,10 +505,11 @@ def group_bucket_times_for_compact_fetch(
     return windows
 
 
+@st.cache_data(show_spinner=False, ttl=90)
 def fetch_segment_snapshots_for_multiple_buckets(
     token: str,
     gpkg_path: str,
-    bucket_times: list[pd.Timestamp],
+    bucket_time_isos: tuple[str, ...],
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     """
     Fetch several compact windows instead of one large multi-week window.
@@ -484,12 +524,13 @@ def fetch_segment_snapshots_for_multiple_buckets(
         Diagnostics:
             metadata about grouped fetch windows
     """
-    if not bucket_times:
+    if not bucket_time_isos:
         return pd.DataFrame(), {
             "historical_fetch_group_count": 0,
             "historical_fetch_windows": [],
         }
 
+    bucket_times = [pd.Timestamp(value) for value in bucket_time_isos]
     lookup_df = build_segment_lookup_from_gpkg(gpkg_path)
     grouped_windows = group_bucket_times_for_compact_fetch(bucket_times)
 
@@ -506,8 +547,8 @@ def fetch_segment_snapshots_for_multiple_buckets(
     for window_start, window_end, bucket_group in grouped_windows:
         raw_speed_df = fetch_raw_bucket_speeds(
             token=token,
-            window_start=window_start,
-            window_end=window_end,
+            window_start_iso=window_start.isoformat(),
+            window_end_iso=window_end.isoformat(),
         )
 
         if raw_speed_df.empty:
@@ -560,31 +601,33 @@ def fetch_segment_snapshots_for_multiple_buckets(
     }
 
 
+@st.cache_data(show_spinner=False, ttl=90)
 def build_historical_feature_matrix(
     token: str,
     gpkg_path: str,
-    snapshot_time: pd.Timestamp,
-    ordered_segment_ids: list[str],
+    snapshot_time_iso: str,
+    ordered_segment_ids: tuple[str, ...],
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
+    snapshot_time = pd.Timestamp(snapshot_time_iso)
     plan = build_historical_window_plan(snapshot_time)
-    bucket_times = [bucket_time for _, bucket_time in plan]
+    bucket_time_isos = tuple(bucket_time.isoformat() for _, bucket_time in plan)
 
     bucket_matrix, fetch_meta = fetch_segment_snapshots_for_multiple_buckets(
         token=token,
         gpkg_path=gpkg_path,
-        bucket_times=bucket_times,
+        bucket_time_isos=bucket_time_isos,
     )
 
-    historical_df = pd.DataFrame(index=ordered_segment_ids)
+    historical_df = pd.DataFrame(index=list(ordered_segment_ids))
     historical_df.index.name = "segment_id"
 
     non_null_counts: dict[str, int] = {}
 
     for label, bucket_time in plan:
         if bucket_time in bucket_matrix.columns:
-            aligned_series = bucket_matrix[bucket_time].reindex(ordered_segment_ids)
+            aligned_series = bucket_matrix[bucket_time].reindex(list(ordered_segment_ids))
         else:
-            aligned_series = pd.Series(index=ordered_segment_ids, dtype="float32")
+            aligned_series = pd.Series(index=list(ordered_segment_ids), dtype="float32")
 
         historical_df[label] = pd.to_numeric(
             aligned_series,
@@ -637,70 +680,42 @@ def build_model_input_window_from_historical(historical_df: pd.DataFrame) -> tor
     return tensor
 
 
-def run_tmp_model_inference(
-    completed_snapshot_df: pd.DataFrame,
+@st.cache_data(show_spinner=False, ttl=90)
+def run_tmp_model_inference_cached(
+    snapshot_time_iso: str,
+    ordered_segment_ids: tuple[str, ...],
+    base_snapshot_values: tuple[float, ...],
     token: str,
     gpkg_path: str,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     diagnostics = build_empty_estimation_diagnostics()
+    diagnostics["snapshot_found"] = True
+    diagnostics["snapshot_time"] = snapshot_time_iso
+    diagnostics["snapshot_bucket_time"] = floor_to_15_minutes(pd.Timestamp(snapshot_time_iso)).isoformat()
+    diagnostics["prepared_snapshot_size"] = len(ordered_segment_ids)
+    diagnostics["prepared_snapshot_null_count"] = 0
 
-    if completed_snapshot_df.empty:
-        diagnostics["error_message"] = "Completed STIB snapshot is empty."
-        return pd.DataFrame(columns=["segment_id", "est_speed"]), diagnostics
-
-    snapshot_time = get_snapshot_timestamp(completed_snapshot_df)
-    diagnostics["snapshot_found"] = snapshot_time is not None
-    diagnostics["snapshot_time"] = (
-        snapshot_time.isoformat() if snapshot_time is not None else None
+    base_snapshot_series = pd.Series(
+        data=list(base_snapshot_values),
+        index=list(ordered_segment_ids),
+        dtype="float32",
     )
 
-    if snapshot_time is None:
-        diagnostics["error_message"] = "Snapshot time could not be extracted."
-        return pd.DataFrame(columns=["segment_id", "est_speed"]), diagnostics
-
-    diagnostics["snapshot_bucket_time"] = floor_to_15_minutes(snapshot_time).isoformat()
-    diagnostics["raw_snapshot_rows"] = int(len(completed_snapshot_df))
-
-    base_snapshot_series = prepare_snapshot_series(completed_snapshot_df)
-    diagnostics["prepared_snapshot_size"] = int(len(base_snapshot_series))
-    diagnostics["prepared_snapshot_null_count"] = int(base_snapshot_series.isna().sum())
-
-    if base_snapshot_series.empty:
-        diagnostics["error_message"] = "No valid final_speed_kmh values were found."
-        return pd.DataFrame(columns=["segment_id", "est_speed"]), diagnostics
-
-    checkpoint_path = resolve_checkpoint_path()
-    diagnostics["model_path"] = str(checkpoint_path)
-
-    if not checkpoint_path.exists():
-        diagnostics["error_message"] = f"Model file was not found at: {checkpoint_path}"
-        return pd.DataFrame(columns=["segment_id", "est_speed"]), diagnostics
-
-    checkpoint, checkpoint_type = load_checkpoint(checkpoint_path)
-    diagnostics["checkpoint_type"] = checkpoint_type
-
-    model, config = build_model_from_checkpoint(
-        checkpoint=checkpoint,
-        inferred_num_streets=len(base_snapshot_series),
+    model, config, model_path, checkpoint_type = get_cached_model_bundle(
+        num_streets=len(ordered_segment_ids)
     )
 
     diagnostics["model_loaded"] = True
+    diagnostics["model_path"] = model_path
+    diagnostics["checkpoint_type"] = checkpoint_type
     diagnostics["window_size"] = int(config["window_size"])
     diagnostics["num_streets"] = int(config["num_streets"])
-
-    ordered_segment_ids = list(base_snapshot_series.index.astype(str))
-
-    if len(ordered_segment_ids) != int(config["num_streets"]):
-        raise ValueError(
-            "Current snapshot size does not match checkpoint street count. "
-            f"current={len(ordered_segment_ids)} checkpoint={config['num_streets']}"
-        )
 
     try:
         historical_df, historical_meta = build_historical_feature_matrix(
             token=token,
             gpkg_path=gpkg_path,
-            snapshot_time=snapshot_time,
+            snapshot_time_iso=snapshot_time_iso,
             ordered_segment_ids=ordered_segment_ids,
         )
         diagnostics.update(historical_meta)
@@ -713,8 +728,8 @@ def run_tmp_model_inference(
         diagnostics["used_fallback_window"] = True
         diagnostics["error_message"] = f"Historical feature extraction failed: {exc}"
 
-        plan = build_historical_window_plan(snapshot_time)
-        fallback_df = pd.DataFrame(index=ordered_segment_ids)
+        plan = build_historical_window_plan(pd.Timestamp(snapshot_time_iso))
+        fallback_df = pd.DataFrame(index=list(ordered_segment_ids))
 
         for label, _ in plan:
             fallback_df[label] = base_snapshot_series
@@ -741,7 +756,7 @@ def run_tmp_model_inference(
 
     prediction_df = pd.DataFrame(
         {
-            "segment_id": ordered_segment_ids,
+            "segment_id": list(ordered_segment_ids),
             "est_speed": y_hat,
         }
     )
@@ -750,6 +765,48 @@ def run_tmp_model_inference(
     prediction_df["est_speed"] = prediction_df["est_speed"].clip(lower=0)
 
     return prediction_df, diagnostics
+
+
+def run_tmp_model_inference(
+    completed_snapshot_df: pd.DataFrame,
+    token: str,
+    gpkg_path: str,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    diagnostics = build_empty_estimation_diagnostics()
+
+    if completed_snapshot_df.empty:
+        diagnostics["error_message"] = "Completed STIB snapshot is empty."
+        return pd.DataFrame(columns=["segment_id", "est_speed"]), diagnostics
+
+    snapshot_time = get_snapshot_timestamp(completed_snapshot_df)
+    diagnostics["snapshot_found"] = snapshot_time is not None
+    diagnostics["snapshot_time"] = (
+        snapshot_time.isoformat() if snapshot_time is not None else None
+    )
+    diagnostics["raw_snapshot_rows"] = int(len(completed_snapshot_df))
+
+    if snapshot_time is None:
+        diagnostics["error_message"] = "Snapshot time could not be extracted."
+        return pd.DataFrame(columns=["segment_id", "est_speed"]), diagnostics
+
+    base_snapshot_series = prepare_snapshot_series(completed_snapshot_df)
+    diagnostics["prepared_snapshot_size"] = int(len(base_snapshot_series))
+    diagnostics["prepared_snapshot_null_count"] = int(base_snapshot_series.isna().sum())
+
+    if base_snapshot_series.empty:
+        diagnostics["error_message"] = "No valid final_speed_kmh values were found."
+        return pd.DataFrame(columns=["segment_id", "est_speed"]), diagnostics
+
+    prediction_df, cached_diagnostics = run_tmp_model_inference_cached(
+        snapshot_time_iso=snapshot_time.isoformat(),
+        ordered_segment_ids=tuple(base_snapshot_series.index.astype(str).tolist()),
+        base_snapshot_values=tuple(float(value) for value in base_snapshot_series.tolist()),
+        token=token,
+        gpkg_path=gpkg_path,
+    )
+
+    cached_diagnostics["raw_snapshot_rows"] = int(len(completed_snapshot_df))
+    return prediction_df, cached_diagnostics
 
 
 def attach_tmp_estimated_speeds(
@@ -795,6 +852,7 @@ def attach_tmp_estimated_speeds(
 
     return result, diagnostics
 
+
 def attach_estimated_speed_to_snapshot(
     completed_snapshot_df: pd.DataFrame,
     prediction_df: pd.DataFrame,
@@ -828,6 +886,7 @@ def attach_estimated_speed_to_snapshot(
 
     return merged
 
+
 @st.cache_data(show_spinner=False, ttl=90)
 def enrich_snapshot_with_estimation(
     completed_snapshot_df: pd.DataFrame,
@@ -836,7 +895,7 @@ def enrich_snapshot_with_estimation(
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     """
     Full pipeline:
-        snapshot → model → merged snapshot with estimated_speed
+        snapshot -> model -> merged snapshot with estimated_speed
     """
     prediction_df, diagnostics = run_tmp_model_inference(
         completed_snapshot_df=completed_snapshot_df,
