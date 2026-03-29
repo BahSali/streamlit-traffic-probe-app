@@ -50,12 +50,37 @@ if "brussels_applied_bus_ids" not in st.session_state:
 if "brussels_refresh_key" not in st.session_state:
     st.session_state["brussels_refresh_key"] = 0
 
+if "brussels_pending_google_fetch" not in st.session_state:
+    st.session_state["brussels_pending_google_fetch"] = False
+
+if "brussels_google_results_df" not in st.session_state:
+    st.session_state["brussels_google_results_df"] = pd.DataFrame(
+        columns=["segment_id", "google_speed_kmh", "google_duration_seconds"]
+    )
+
+if "brussels_google_diagnostics" not in st.session_state:
+    used_count = get_monthly_google_request_count()
+    st.session_state["brussels_google_diagnostics"] = {
+        "selected_segment_count": 0,
+        "group_count": 0,
+        "request_count_planned": 0,
+        "request_count_sent": 0,
+        "success_count": 0,
+        "failure_count": 0,
+        "usage_month_key": None,
+        "usage_monthly_limit": GOOGLE_ROUTES_MONTHLY_LIMIT,
+        "usage_used_before_run": used_count,
+        "usage_remaining_before_run": GOOGLE_ROUTES_MONTHLY_LIMIT - used_count,
+        "usage_used_after_run": used_count,
+        "usage_remaining_after_run": GOOGLE_ROUTES_MONTHLY_LIMIT - used_count,
+        "was_requested": False,
+        "error_message": None,
+        "info_message": None,
+    }
+
 
 @st.cache_data(show_spinner=False)
 def parse_bus_lines(value) -> list[str]:
-    """
-    Parse a bus line string into a normalized list of line identifiers.
-    """
     if pd.isna(value):
         return []
 
@@ -69,9 +94,6 @@ def parse_bus_lines(value) -> list[str]:
 
 @st.cache_data(show_spinner=False)
 def load_brussels_map(path: str = MAP_PATH):
-    """
-    Load the Brussels map geometry and prepare helper columns for UI and mapping.
-    """
     gdf = load_gpkg(path).copy()
 
     if gdf.crs is not None and str(gdf.crs).upper() != "EPSG:4326":
@@ -99,9 +121,6 @@ def load_brussels_map(path: str = MAP_PATH):
 
 @st.cache_data(show_spinner=False)
 def get_filter_options():
-    """
-    Build filter options for the left control panel.
-    """
     gdf = load_brussels_map()
 
     segment_options = sorted(
@@ -130,9 +149,6 @@ def get_selected_mask(
     selected_segment_names: list[str],
     selected_bus_ids: list[str],
 ) -> pd.Series:
-    """
-    Build a row mask for the selected Brussels subset.
-    """
     selected_segment_names = {
         str(value).strip()
         for value in (selected_segment_names or [])
@@ -155,16 +171,13 @@ def get_selected_mask(
         )
 
     return mask
-    
+
+
 def get_selected_map_fids(
     gdf: pd.DataFrame,
     selected_segment_names: list[str],
     selected_bus_ids: list[str],
 ) -> set[int]:
-    """
-    Resolve the selected segment names and bus IDs to map feature IDs.
-    Uses the already loaded map instead of loading it again.
-    """
     mask = get_selected_mask(
         gdf=gdf,
         selected_segment_names=selected_segment_names,
@@ -178,34 +191,30 @@ def get_selected_map_fids(
 
     return set(selected_rows["map_fid"].astype(int).tolist())
 
+
 def get_live_stib_token() -> str | None:
-    """
-    Read the MobilityTwin token from Streamlit secrets.
-    """
     return st.secrets.get(STIB_SECRET_KEY)
 
 
 def format_speed(value) -> str:
-    """
-    Format a numeric speed value for display.
-    """
     if value is None or pd.isna(value):
         return "N/A"
 
     return f"{float(value):.1f} km/h"
 
 
+def format_duration_seconds(value) -> str:
+    if value is None or pd.isna(value):
+        return "N/A"
+
+    return f"{int(float(value))} s"
+
+
 def build_dark_fallback_color(_: object = None) -> str:
-    """
-    Return the default fallback color for missing data.
-    """
     return "#222222"
 
 
 def build_google_color(value) -> str:
-    """
-    Return the display color for Google-derived speed values.
-    """
     if value is None or pd.isna(value):
         return "#000000"
 
@@ -213,16 +222,10 @@ def build_google_color(value) -> str:
 
 
 def convert_dataframe_to_csv_bytes(df: pd.DataFrame) -> bytes:
-    """
-    Convert a DataFrame to downloadable CSV bytes.
-    """
     return df.to_csv(index=False).encode("utf-8")
 
 
 def attach_live_stib_bus_speeds(gdf: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
-    """
-    Attach live STIB bus speeds to the Brussels map GeoDataFrame.
-    """
     result = gdf.copy()
 
     diagnostics = {
@@ -271,9 +274,6 @@ def attach_live_stib_bus_speeds(gdf: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
 
 @st.cache_data(show_spinner=False, ttl=90)
 def get_completed_snapshot_for_ui(refresh_key: int) -> pd.DataFrame:
-    """
-    Load the completed STIB snapshot once and reuse it across the page.
-    """
     token = get_live_stib_token()
     if not token:
         return pd.DataFrame()
@@ -286,20 +286,8 @@ def get_completed_snapshot_for_ui(refresh_key: int) -> pd.DataFrame:
         interpolation_method="latest",
     )
 
-def format_duration_seconds(value) -> str:
-    """
-    Format a duration value for display.
-    """
-    if value is None or pd.isna(value):
-        return "N/A"
-
-    return f"{int(float(value))} s"
-
 
 def finalize_map_columns(gdf: pd.DataFrame) -> pd.DataFrame:
-    """
-    Add display and color columns needed by the HTML map.
-    """
     result = gdf.copy()
 
     if "bus_speed" not in result.columns:
@@ -310,14 +298,15 @@ def finalize_map_columns(gdf: pd.DataFrame) -> pd.DataFrame:
 
     if "google_speed" not in result.columns:
         result["google_speed"] = pd.NA
+
     if "google_duration_seconds" not in result.columns:
         result["google_duration_seconds"] = pd.NA
-    
+
     result["bus_speed_str"] = result["bus_speed"].apply(format_speed)
     result["est_speed_str"] = result["est_speed"].apply(format_speed)
     result["google_speed_str"] = result["google_speed"].apply(format_speed)
     result["google_duration_str"] = result["google_duration_seconds"].apply(format_duration_seconds)
-    
+
     result["bus_color"] = result["bus_speed"].apply(
         lambda value: get_speed_color(float(value))
         if value is not None and not pd.isna(value)
@@ -344,20 +333,65 @@ def finalize_map_columns(gdf: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+def maybe_execute_google_fetch() -> None:
+    """
+    Execute Google Routes only when RUN has been pressed.
+    """
+    if not st.session_state.get("brussels_pending_google_fetch", False):
+        return
+
+    used_before_run = get_monthly_google_request_count()
+
+    try:
+        gdf = load_brussels_map().copy()
+
+        selected_mask = get_selected_mask(
+            gdf=gdf,
+            selected_segment_names=st.session_state["brussels_applied_segment_names"],
+            selected_bus_ids=st.session_state["brussels_applied_bus_ids"],
+        )
+
+        selected_google_gdf = gdf.loc[selected_mask].copy()
+
+        google_result = fetch_google_speeds_for_selected_segments(
+            selected_gdf=selected_google_gdf,
+            monthly_limit=GOOGLE_ROUTES_MONTHLY_LIMIT,
+        )
+
+        st.session_state["brussels_google_results_df"] = google_result["google_results_df"]
+        st.session_state["brussels_google_diagnostics"] = google_result["diagnostics"]
+
+    except Exception as exc:
+        st.session_state["brussels_google_results_df"] = pd.DataFrame(
+            columns=["segment_id", "google_speed_kmh", "google_duration_seconds"]
+        )
+        st.session_state["brussels_google_diagnostics"] = {
+            "selected_segment_count": 0,
+            "group_count": 0,
+            "request_count_planned": 0,
+            "request_count_sent": 0,
+            "success_count": 0,
+            "failure_count": 0,
+            "usage_month_key": None,
+            "usage_monthly_limit": GOOGLE_ROUTES_MONTHLY_LIMIT,
+            "usage_used_before_run": used_before_run,
+            "usage_remaining_before_run": GOOGLE_ROUTES_MONTHLY_LIMIT - used_before_run,
+            "usage_used_after_run": used_before_run,
+            "usage_remaining_after_run": GOOGLE_ROUTES_MONTHLY_LIMIT - used_before_run,
+            "was_requested": False,
+            "error_message": f"Google Routes execution failed: {exc}",
+            "info_message": None,
+        }
+    finally:
+        st.session_state["brussels_pending_google_fetch"] = False
+
+
 def prepare_brussels_page_payload(
     colorized: bool,
     selected_segment_names: tuple[str, ...],
     selected_bus_ids: tuple[str, ...],
     refresh_key: int,
 ) -> dict:
-    """
-    Build the complete page payload once.
-
-    This function avoids:
-    - duplicated snapshot loading
-    - duplicated TMP inference
-    - duplicated enrichment work
-    """
     gdf = load_brussels_map().copy()
 
     selected_map_fids = get_selected_map_fids(
@@ -390,21 +424,13 @@ def prepare_brussels_page_payload(
 
     completed_snapshot_df = pd.DataFrame()
     enriched_snapshot_df = pd.DataFrame()
-    google_diagnostics = {
-        "selected_segment_count": 0,
-        "group_count": 0,
-        "request_count_planned": 0,
-        "request_count_sent": 0,
-        "success_count": 0,
-        "failure_count": 0,
-        "usage_month_key": None,
-        "usage_monthly_limit": GOOGLE_ROUTES_MONTHLY_LIMIT,
-        "usage_used_before_run": get_monthly_google_request_count(),
-        "usage_remaining_before_run": GOOGLE_ROUTES_MONTHLY_LIMIT - get_monthly_google_request_count(),
-        "was_requested": False,
-        "error_message": None,
-        "info_message": None,
-    }
+
+    google_results_df = st.session_state.get(
+        "brussels_google_results_df",
+        pd.DataFrame(columns=["segment_id", "google_speed_kmh", "google_duration_seconds"]),
+    )
+    google_diagnostics = st.session_state.get("brussels_google_diagnostics", {})
+
     if colorized:
         gdf, diagnostics = attach_live_stib_bus_speeds(gdf)
 
@@ -424,36 +450,9 @@ def prepare_brussels_page_payload(
                     prediction_df=prediction_df,
                 )
                 estimation_diagnostics["matched_segments"] = matched_segments
-                
-                selected_mask = get_selected_mask(
-                    gdf=gdf,
-                    selected_segment_names=list(selected_segment_names),
-                    selected_bus_ids=list(selected_bus_ids),
-                )
-                selected_google_gdf = gdf.loc[selected_mask].copy()
-    
-                google_result = fetch_google_speeds_for_selected_segments(
-                    selected_gdf=selected_google_gdf,
-                    monthly_limit=GOOGLE_ROUTES_MONTHLY_LIMIT,
-                )
-    
-                google_results_df = google_result["google_results_df"]
-                google_diagnostics = google_result["diagnostics"]
-    
-                gdf = attach_google_results_to_map_gdf(
-                    gdf=gdf,
-                    google_results_df=google_results_df,
-                )
-    
-                enriched_snapshot_df = attach_google_results_to_snapshot_df(
-                    snapshot_df=enriched_snapshot_df,
-                    google_results_df=google_results_df,
-                )
-                
+
             except Exception as exc:
                 gdf["est_speed"] = pd.NA
-                gdf["google_speed"] = pd.NA
-                gdf["google_duration_seconds"] = pd.NA
                 estimation_diagnostics = {
                     "estimation_mode": "pt_inference_historical_tmp",
                     "snapshot_found": False,
@@ -480,6 +479,17 @@ def prepare_brussels_page_payload(
                 "used_fallback_window": False,
                 "error_message": "Missing MobilityTwin token in Streamlit secrets.",
             }
+
+        gdf = attach_google_results_to_map_gdf(
+            gdf=gdf,
+            google_results_df=google_results_df,
+        )
+
+        if not enriched_snapshot_df.empty:
+            enriched_snapshot_df = attach_google_results_to_snapshot_df(
+                snapshot_df=enriched_snapshot_df,
+                google_results_df=google_results_df,
+            )
     else:
         gdf["bus_speed"] = pd.NA
         gdf["est_speed"] = pd.NA
@@ -510,9 +520,6 @@ def prepare_brussels_page_payload(
 
 
 def build_three_map_html(geojson_obj, center_lat, center_lon):
-    """
-    Build the HTML for the three synchronized Leaflet maps.
-    """
     geojson_str = json.dumps(geojson_obj)
 
     html = f"""
@@ -782,6 +789,7 @@ if controls["colorize_clicked"]:
     )
     st.session_state["brussels_colorized"] = True
     st.session_state["brussels_refresh_key"] += 1
+    st.session_state["brussels_pending_google_fetch"] = True
     st.rerun()
 
 if controls["reset_clicked"]:
@@ -789,8 +797,32 @@ if controls["reset_clicked"]:
     st.session_state["brussels_applied_segment_names"] = []
     st.session_state["brussels_applied_bus_ids"] = []
     st.session_state["brussels_refresh_key"] += 1
+    st.session_state["brussels_pending_google_fetch"] = False
+    st.session_state["brussels_google_results_df"] = pd.DataFrame(
+        columns=["segment_id", "google_speed_kmh", "google_duration_seconds"]
+    )
+    used_count = get_monthly_google_request_count()
+    st.session_state["brussels_google_diagnostics"] = {
+        "selected_segment_count": 0,
+        "group_count": 0,
+        "request_count_planned": 0,
+        "request_count_sent": 0,
+        "success_count": 0,
+        "failure_count": 0,
+        "usage_month_key": None,
+        "usage_monthly_limit": GOOGLE_ROUTES_MONTHLY_LIMIT,
+        "usage_used_before_run": used_count,
+        "usage_remaining_before_run": GOOGLE_ROUTES_MONTHLY_LIMIT - used_count,
+        "usage_used_after_run": used_count,
+        "usage_remaining_after_run": GOOGLE_ROUTES_MONTHLY_LIMIT - used_count,
+        "was_requested": False,
+        "error_message": None,
+        "info_message": None,
+    }
     st.rerun()
 
+
+maybe_execute_google_fetch()
 
 with content_box:
     st.markdown("<h2 style='color:#009688;'>Brussels</h2>", unsafe_allow_html=True)
@@ -810,7 +842,7 @@ with content_box:
     estimation_diagnostics = payload.get("estimation_diagnostics", {})
     enriched_snapshot_df = payload.get("enriched_snapshot_df", pd.DataFrame())
     google_diagnostics = payload.get("google_diagnostics", {})
-    
+
     if diagnostics["error_message"]:
         st.warning(diagnostics["error_message"])
 
@@ -851,10 +883,11 @@ with content_box:
             f"sent requests: {google_diagnostics.get('request_count_sent', 0)}, "
             f"success: {google_diagnostics.get('success_count', 0)}, "
             f"failure: {google_diagnostics.get('failure_count', 0)}, "
-            f"monthly used before run: {google_diagnostics.get('usage_used_before_run', 0)}, "
-            f"monthly remaining before run: {google_diagnostics.get('usage_remaining_before_run', 0)}, "
+            f"monthly used after run: {google_diagnostics.get('usage_used_after_run', 0)}, "
+            f"monthly remaining: {google_diagnostics.get('usage_remaining_after_run', 0)}, "
             f"monthly limit: {google_diagnostics.get('usage_monthly_limit', GOOGLE_ROUTES_MONTHLY_LIMIT)}"
         )
+
     if estimation_diagnostics.get("error_message"):
         st.warning(estimation_diagnostics["error_message"])
 
@@ -863,7 +896,7 @@ with content_box:
 
     if google_diagnostics.get("error_message"):
         st.warning(google_diagnostics["error_message"])
-        
+
     html = build_three_map_html(
         payload["geojson"],
         payload["center_lat"],
@@ -892,18 +925,14 @@ with content_box:
     st.markdown("---")
     st.markdown("### Overview")
 
-    google_used = google_diagnostics.get("usage_used_before_run", 0)
+    google_used = google_diagnostics.get("usage_used_after_run", get_monthly_google_request_count())
     google_remaining = google_diagnostics.get(
-        "usage_remaining_before_run",
-        GOOGLE_ROUTES_MONTHLY_LIMIT,
+        "usage_remaining_after_run",
+        GOOGLE_ROUTES_MONTHLY_LIMIT - google_used,
     )
-    google_limit = google_diagnostics.get(
-        "usage_monthly_limit",
-        GOOGLE_ROUTES_MONTHLY_LIMIT,
-    )
-    
+
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Google used", google_used)
     col2.metric("Google left", google_remaining)
-    col3.metric("Map segments", payload["segment_count"])
-    col4.metric("Live STIB segments", payload["live_bus_count"])
+    col3.metric("Google segments", payload["selected_google_count"])
+    col4.metric("STIB live", payload["live_bus_count"])
