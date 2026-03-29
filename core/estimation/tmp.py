@@ -794,3 +794,59 @@ def attach_tmp_estimated_speeds(
     diagnostics["matched_segments"] = int(result["est_speed"].notna().sum())
 
     return result, diagnostics
+
+def attach_estimated_speed_to_snapshot(
+    completed_snapshot_df: pd.DataFrame,
+    prediction_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Merge model predictions into the completed snapshot DataFrame.
+
+    Adds:
+        estimated_speed column
+    """
+    if completed_snapshot_df.empty:
+        result = completed_snapshot_df.copy()
+        result["estimated_speed"] = pd.NA
+        return result
+
+    if "segment_id" not in completed_snapshot_df.columns:
+        raise ValueError("completed_snapshot_df must contain 'segment_id'")
+
+    result = completed_snapshot_df.copy()
+
+    prediction_df = prediction_df.copy()
+    prediction_df["segment_id"] = prediction_df["segment_id"].astype(str).str.strip()
+
+    result["segment_id"] = result["segment_id"].astype(str).str.strip()
+
+    merged = result.merge(
+        prediction_df.rename(columns={"est_speed": "estimated_speed"}),
+        on="segment_id",
+        how="left",
+    )
+
+    return merged
+
+@st.cache_data(show_spinner=False, ttl=90)
+def enrich_snapshot_with_estimation(
+    completed_snapshot_df: pd.DataFrame,
+    token: str,
+    gpkg_path: str,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """
+    Full pipeline:
+        snapshot → model → merged snapshot with estimated_speed
+    """
+    prediction_df, diagnostics = run_tmp_model_inference(
+        completed_snapshot_df=completed_snapshot_df,
+        token=token,
+        gpkg_path=gpkg_path,
+    )
+
+    enriched_df = attach_estimated_speed_to_snapshot(
+        completed_snapshot_df=completed_snapshot_df,
+        prediction_df=prediction_df,
+    )
+
+    return enriched_df, diagnostics
