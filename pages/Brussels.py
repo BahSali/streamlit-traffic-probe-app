@@ -17,7 +17,10 @@ from core.nav_panel import render_left_panel
 from core.styles import inject_styles
 from core.ui.brussels_controls import brussels_left_controls
 
-from core.estimation.tmp import attach_tmp_estimated_speeds
+from core.estimation.tmp import (
+    attach_tmp_estimated_speeds,
+    enrich_snapshot_with_estimation,
+)
 
 st.set_page_config(page_title="Brussels", layout="wide")
 inject_styles()
@@ -730,14 +733,25 @@ with content_box:
     diagnostics = payload["diagnostics"]
     estimation_diagnostics = payload.get("estimation_diagnostics", {})
 
+    .
     completed_snapshot_df = pd.DataFrame()
+
     if st.session_state["brussels_colorized"]:
-        try:
-            completed_snapshot_df = get_completed_snapshot_for_ui(
-                st.session_state["brussels_refresh_key"]
-            )
-        except Exception as exc:
-            st.warning(f"Completed STIB snapshot could not be prepared: {exc}")
+        token = get_live_stib_token()
+    
+        if token:
+            try:
+                completed_snapshot_df = get_completed_snapshot_for_ui(
+                    st.session_state["brussels_refresh_key"]
+                )
+                completed_snapshot_df, _ = enrich_snapshot_with_estimation(
+                    completed_snapshot_df=completed_snapshot_df,
+                    token=token,
+                    gpkg_path=MAP_PATH,
+                )
+    
+            except Exception as exc:
+                st.warning(f"Completed STIB snapshot could not be prepared: {exc}")
                 
     if diagnostics["error_message"]:
         st.warning(diagnostics["error_message"])
