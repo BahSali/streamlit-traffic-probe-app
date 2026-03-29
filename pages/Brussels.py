@@ -905,5 +905,5 @@ with content_box:
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Google used", google_used)
     col2.metric("Google left", google_remaining)
-    col3.metric("Google-speed segments", payload["selected_google_count"])
+    col3.metric("Map segments", payload["segment_count"])
     col4.metric("Live STIB segments", payload["live_bus_count"])
