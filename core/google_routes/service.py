@@ -11,7 +11,7 @@ import requests
 import streamlit as st
 
 
-GOOGLE_ROUTES_SECRET_KEY = "GOOGLE_ROUTES_API_KEY"
+GOOGLE_ROUTES_SECRET_KEY = "GOOGLE_MAPS_API_KEY"
 GOOGLE_ROUTES_MONTHLY_LIMIT = 5000
 GOOGLE_ROUTES_API_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
 GOOGLE_ROUTES_TIMEOUT_SECONDS = 20
