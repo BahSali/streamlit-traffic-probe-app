@@ -9,40 +9,23 @@ def _prepare_results_df(results_df: pd.DataFrame) -> pd.DataFrame:
     if results_df is None or results_df.empty:
         return pd.DataFrame()
 
-    df = results_df.copy()
-    df.columns = [str(c).strip() for c in df.columns]
-
-    rename_map = {
-        "live_speed_kmh": "bus_speed_live",
-        "final_speed_kmh": "bus_speed_completed",
-        "estimated_speed": "est_speed",
-        "google_speed_kmh": "google_speed",
-        "snapshot_time": "timestamp",
-    }
-
-    existing_rename_map = {
-        old: new for old, new in rename_map.items() if old in df.columns
-    }
-    df = df.rename(columns=existing_rename_map)
+    df = results_df.copy().rename(
+        columns={
+            "live_speed_kmh": "bus_speed_live",
+            "final_speed_kmh": "bus_speed_completed",
+            "estimated_speed": "est_speed",
+            "google_speed_kmh": "google_speed",
+            "snapshot_time": "timestamp",
+        }
+    )
 
     for col in ["bus_speed_live", "bus_speed_completed", "est_speed", "google_speed"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    if "segment_id" not in df.columns:
-        df["segment_id"] = ""
-
-    if "segment_name" not in df.columns:
-        df["segment_name"] = df["segment_id"].astype(str)
-
-    if "bus_lines" not in df.columns:
-        df["bus_lines"] = ""
-
     return df
     
 def render_brussels_results_visualisation(results_df: pd.DataFrame) -> None:
-    st.markdown("### Visualisation")
-
     df = _prepare_results_df(results_df)
     if df.empty:
         st.info("No results available for visualisation.")
