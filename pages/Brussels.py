@@ -27,7 +27,7 @@ from core.google_routes.service import (
 from core.nav_panel import render_left_panel
 from core.styles import inject_styles
 from core.ui.brussels_controls import brussels_left_controls
-
+from visualisation.brussels_results import render_brussels_results_visualisation
 
 st.set_page_config(page_title="Brussels", layout="wide")
 inject_styles()
@@ -981,6 +981,7 @@ with content_box:
             use_container_width=False,
         )
 
+    render_brussels_results_visualisation(enriched_snapshot_df)
     st.markdown("---")
     st.markdown("### Overview")
 
