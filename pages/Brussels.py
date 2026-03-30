@@ -992,6 +992,9 @@ with content_box:
         )
 
     st.markdown("---")
+    st.markdown("### API")
+    
+    st.markdown("---")
     st.markdown("### Performance Analysis")
     if st.session_state["brussels_colorized"] and not enriched_snapshot_df.empty:
         render_brussels_results_visualisation(enriched_snapshot_df)
