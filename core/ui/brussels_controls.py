@@ -15,8 +15,8 @@ def brussels_left_controls(
     applied_bus_ids = applied_bus_ids or []
 
     with settings_box:
-        st.markdown("### Brussels controls")
-        st.markdown("**Filters (OR logic)**")
+        st.markdown("### Google Routes Filters")
+        st.markdown("Select road segments based on name or serving bus lines to fetch Google speeds.")
 
         selected_segments = st.multiselect(
             "Segment name(s)",
