@@ -993,6 +993,7 @@ with content_box:
         )
 
     st.markdown("---")
+    st.markdown("### Visualisation")
     if st.session_state["brussels_colorized"] and not enriched_snapshot_df.empty:
         render_brussels_results_visualisation(enriched_snapshot_df)
     
