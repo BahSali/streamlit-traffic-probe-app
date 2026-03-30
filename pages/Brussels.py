@@ -981,7 +981,9 @@ with content_box:
             use_container_width=False,
         )
 
+    st.markdown("---")
     render_brussels_results_visualisation(enriched_snapshot_df)
+    
     st.markdown("---")
     st.markdown("### Overview")
 
