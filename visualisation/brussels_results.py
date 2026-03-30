@@ -10,46 +10,55 @@ def _prepare_results_df(results_df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
 
     df = results_df.copy()
+    df.columns = [str(c).strip() for c in df.columns]
 
-    rename_map = {
-        "google_speed_kmh": "google_speed",
-    }
+    def pick_first_existing(candidates: list[str]) -> str | None:
+        for col in candidates:
+            if col in df.columns:
+                return col
+        return None
 
-    for old_col, new_col in rename_map.items():
-        if old_col in df.columns and new_col not in df.columns:
-            df = df.rename(columns={old_col: new_col})
+    # --- normalize google ---
+    google_col = pick_first_existing([
+        "google_speed",
+        "google_speed_kmh",
+    ])
+    if google_col and google_col != "google_speed":
+        df["google_speed"] = df[google_col]
 
-    bus_live_candidates = [
+    # --- normalize estimation ---
+    est_col = pick_first_existing([
+        "est_speed",
+        "estimated_speed",
+        "prediction",
+        "pred_speed",
+    ])
+    if est_col and est_col != "est_speed":
+        df["est_speed"] = df[est_col]
+
+    # --- normalize bus live / completed ---
+    bus_completed_col = pick_first_existing([
         "bus_speed",
-        "live_bus_speed",
-        "live_speed",
-        "stib_speed",
-    ]
-    bus_completed_candidates = [
         "completed_bus_speed",
         "final_completed_speed",
         "snapshot_speed",
         "observed_speed",
         "speed",
-    ]
+    ])
+    if bus_completed_col:
+        df["bus_speed_completed"] = df[bus_completed_col]
 
-    if "bus_speed_live" not in df.columns:
-        for col in bus_live_candidates:
-            if col in df.columns:
-                df["bus_speed_live"] = df[col]
-                break
+    bus_live_col = pick_first_existing([
+        "live_bus_speed",
+        "bus_speed_live",
+        "live_speed",
+        "stib_speed",
+    ])
+    if bus_live_col:
+        df["bus_speed_live"] = df[bus_live_col]
 
-    if "bus_speed_completed" not in df.columns:
-        for col in bus_completed_candidates:
-            if col in df.columns:
-                df["bus_speed_completed"] = df[col]
-                break
-
-    if "est_speed" not in df.columns:
-        for col in ["estimated_speed", "prediction", "pred_speed"]:
-            if col in df.columns:
-                df["est_speed"] = df[col]
-                break
+    if "bus_speed_live" not in df.columns and "bus_speed_completed" in df.columns:
+        df["bus_speed_live"] = df["bus_speed_completed"]
 
     for col in ["bus_speed_live", "bus_speed_completed", "est_speed", "google_speed"]:
         if col in df.columns:
