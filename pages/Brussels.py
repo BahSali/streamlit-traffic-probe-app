@@ -378,6 +378,11 @@ def finalize_map_columns(gdf: pd.DataFrame) -> pd.DataFrame:
 
     return result
 
+def reorder_columns(df: pd.DataFrame, priority_cols: list[str]) -> pd.DataFrame:
+    existing_priority = [col for col in priority_cols if col in df.columns]
+    remaining_cols = [col for col in df.columns if col not in existing_priority]
+    return df[existing_priority + remaining_cols]
+
 
 def maybe_execute_google_fetch() -> None:
     """
@@ -973,6 +978,10 @@ with content_box:
         [c for c in enriched_snapshot_df.columns if c not in ["timestamp", "segment_id", "segment_name", "bus_lines"]]
     ]
     if st.session_state["brussels_colorized"] and not enriched_snapshot_df.empty:
+        enriched_snapshot_df = reorder_columns(
+            enriched_snapshot_df,
+            ["timestamp", "segment_id", "segment_name", "bus_lines"],
+        )
         st.download_button(
             label="Download results",
             data=convert_dataframe_to_csv_bytes(enriched_snapshot_df),
