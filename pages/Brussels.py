@@ -28,7 +28,7 @@ from core.nav_panel import render_left_panel
 from core.styles import inject_styles
 from core.ui.brussels_controls import brussels_left_controls
 from visualisation.brussels_results import render_brussels_results_visualisation
-from core.brussels_api_docs import build_brussels_api_info
+from core.brussels_api_docs import render_brussels_api
 
 st.set_page_config(page_title="Brussels", layout="wide")
 inject_styles()
@@ -995,7 +995,10 @@ with content_box:
     st.markdown("---")
     st.markdown("### API")
     if st.session_state["brussels_colorized"] and not enriched_snapshot_df.empty:
-        st.session_state["brussels_show_api_info"] = False
+        render_brussels_api(
+            selected_segment_names=st.session_state.get("brussels_applied_segment_names", []),
+            selected_bus_ids=st.session_state.get("brussels_applied_bus_ids", []),
+        )
     
     st.markdown("---")
     st.markdown("### Performance Analysis")
