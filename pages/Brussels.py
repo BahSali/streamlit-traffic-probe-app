@@ -973,6 +973,14 @@ with content_box:
         [c for c in enriched_snapshot_df.columns if c not in ["timestamp", "segment_id", "segment_name", "bus_lines"]]
     ]
     if st.session_state["brussels_colorized"] and not enriched_snapshot_df.empty:
+        #---
+        first_cols = ["timestamp", "segment_id", "segment_name", "bus_lines"]
+        first_cols = [c for c in first_cols if c in enriched_snapshot_df.columns]
+        
+        enriched_snapshot_df = enriched_snapshot_df[
+            first_cols + [c for c in enriched_snapshot_df.columns if c not in first_cols]
+        ]
+        #---
         st.download_button(
             label="Download results",
             data=convert_dataframe_to_csv_bytes(enriched_snapshot_df),
