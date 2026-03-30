@@ -56,11 +56,5 @@ def render_brussels_api(
         "for the current selection."
     )
 
-    st.markdown("**Endpoint**")
-    st.code(base_url, language="text")
-
-    st.markdown("**Request URL**")
-    st.code(request_url, language="text")
-
     st.markdown("**Sample JSON Response**")
     st.code(json.dumps(sample_response, indent=2), language="json")
