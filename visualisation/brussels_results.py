@@ -12,53 +12,18 @@ def _prepare_results_df(results_df: pd.DataFrame) -> pd.DataFrame:
     df = results_df.copy()
     df.columns = [str(c).strip() for c in df.columns]
 
-    def pick_first_existing(candidates: list[str]) -> str | None:
-        for col in candidates:
-            if col in df.columns:
-                return col
-        return None
+    rename_map = {
+        "live_speed_kmh": "bus_speed_live",
+        "final_speed_kmh": "bus_speed_completed",
+        "estimated_speed": "est_speed",
+        "google_speed_kmh": "google_speed",
+        "snapshot_time": "timestamp",
+    }
 
-    # --- normalize google ---
-    google_col = pick_first_existing([
-        "google_speed",
-        "google_speed_kmh",
-    ])
-    if google_col and google_col != "google_speed":
-        df["google_speed"] = df[google_col]
-
-    # --- normalize estimation ---
-    est_col = pick_first_existing([
-        "est_speed",
-        "estimated_speed",
-        "prediction",
-        "pred_speed",
-    ])
-    if est_col and est_col != "est_speed":
-        df["est_speed"] = df[est_col]
-
-    # --- normalize bus live / completed ---
-    bus_completed_col = pick_first_existing([
-        "bus_speed",
-        "completed_bus_speed",
-        "final_completed_speed",
-        "snapshot_speed",
-        "observed_speed",
-        "speed",
-    ])
-    if bus_completed_col:
-        df["bus_speed_completed"] = df[bus_completed_col]
-
-    bus_live_col = pick_first_existing([
-        "live_bus_speed",
-        "bus_speed_live",
-        "live_speed",
-        "stib_speed",
-    ])
-    if bus_live_col:
-        df["bus_speed_live"] = df[bus_live_col]
-
-    if "bus_speed_live" not in df.columns and "bus_speed_completed" in df.columns:
-        df["bus_speed_live"] = df["bus_speed_completed"]
+    existing_rename_map = {
+        old: new for old, new in rename_map.items() if old in df.columns
+    }
+    df = df.rename(columns=existing_rename_map)
 
     for col in ["bus_speed_live", "bus_speed_completed", "est_speed", "google_speed"]:
         if col in df.columns:
