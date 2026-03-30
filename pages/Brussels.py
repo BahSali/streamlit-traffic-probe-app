@@ -118,6 +118,52 @@ def load_brussels_map(path: str = MAP_PATH):
 
     return gdf
 
+def build_segment_metadata_df(gdf: pd.DataFrame) -> pd.DataFrame:
+    metadata_df = gdf.copy()
+
+    if "id" not in metadata_df.columns:
+        raise KeyError("Brussels map gdf must contain an 'id' column.")
+
+    metadata_df["segment_id"] = metadata_df["id"].astype(str).str.strip()
+
+    for column in ["segment_name", "bus_lines"]:
+        if column not in metadata_df.columns:
+            metadata_df[column] = ""
+
+    metadata_df = (
+        metadata_df[["segment_id", "segment_name", "bus_lines"]]
+        .drop_duplicates(subset=["segment_id"])
+        .reset_index(drop=True)
+    )
+
+    return metadata_df
+
+
+def attach_segment_metadata(
+    df: pd.DataFrame,
+    metadata_df: pd.DataFrame,
+    source_id_col: str = "segment_id",
+) -> pd.DataFrame:
+    if df.empty or source_id_col not in df.columns:
+        return df.copy()
+
+    result = df.copy()
+    result[source_id_col] = result[source_id_col].astype(str).str.strip()
+
+    metadata_for_merge = metadata_df.rename(columns={"segment_id": source_id_col})
+
+    for col in ["segment_name", "bus_lines"]:
+        if col in result.columns:
+            result = result.drop(columns=[col])
+
+    result = result.merge(
+        metadata_for_merge,
+        on=source_id_col,
+        how="left",
+        validate="many_to_one",
+    )
+
+    return result
 
 @st.cache_data(show_spinner=False)
 def get_filter_options():
@@ -393,6 +439,7 @@ def prepare_brussels_page_payload(
     refresh_key: int,
 ) -> dict:
     gdf = load_brussels_map().copy()
+    segment_metadata_df = build_segment_metadata_df(gdf)
 
     selected_map_fids = get_selected_map_fids(
         gdf=gdf,
@@ -438,7 +485,11 @@ def prepare_brussels_page_payload(
         if token:
             try:
                 completed_snapshot_df = get_completed_snapshot_for_ui(refresh_key)
-
+                completed_snapshot_df = attach_segment_metadata(
+                    completed_snapshot_df,
+                    segment_metadata_df,
+                    source_id_col="segment_id",
+                )
                 prediction_df, enriched_snapshot_df, estimation_diagnostics = build_estimation_artifacts(
                     completed_snapshot_df=completed_snapshot_df,
                     token=token,
@@ -490,6 +541,11 @@ def prepare_brussels_page_payload(
                 snapshot_df=enriched_snapshot_df,
                 google_results_df=google_results_df,
             )
+        enriched_snapshot_df = attach_segment_metadata(
+            enriched_snapshot_df,
+            segment_metadata_df,
+            source_id_col="segment_id",
+        )
     else:
         gdf["bus_speed"] = pd.NA
         gdf["est_speed"] = pd.NA
