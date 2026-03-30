@@ -966,7 +966,7 @@ with content_box:
     col_map, col_legend = st.columns([10, 1], vertical_alignment="top")
 
     with col_map:
-        components.html(html, height=640, scrolling=False)
+        components.html(html, height=560, scrolling=False)
 
     with col_legend:
         st.markdown(legend_html(), unsafe_allow_html=True)
