@@ -675,9 +675,9 @@ def build_three_map_html(geojson_obj, center_lat, center_lon):
 <body>
   <div class="wrapper">
     <div class="titles">
-      <div>Observed Bus-Derived Speeds (STIB)</div>
-      <div>Model-Derived Street Speed Estimates</div>
-      <div>Google Routes API-Derived Speeds</div>
+      <div>Bus Speeds (STIB)</div>
+      <div>Estimated Speeds (Model)</div>
+      <div>Google API Speeds</div>
     </div>
     <div class="maps">
       <div id="map1" class="map"></div>
