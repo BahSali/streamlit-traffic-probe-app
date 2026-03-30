@@ -70,7 +70,8 @@ def render_summary_metrics(df: pd.DataFrame) -> None:
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Total rows", len(df))
-    col2.metric("Bus available", int(df["bus_speed"].notna().sum()) if "bus_speed" in df.columns else 0)
+    #col2.metric("Bus available", int(df["bus_speed"].notna().sum()) if "bus_speed" in df.columns else 0)
+    col2.metric("Bus available", len(df))
     col3.metric("Google available", int(df["google_speed"].notna().sum()) if "google_speed" in df.columns else 0)
     col4.metric(
         "Mean |Est-Google|",
