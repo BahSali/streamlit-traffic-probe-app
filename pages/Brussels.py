@@ -994,7 +994,7 @@ with content_box:
 
     st.markdown("---")
     st.markdown("### API")
-    if "brussels_show_api_info" not in st.session_state:
+    if st.session_state["brussels_colorized"] and not enriched_snapshot_df.empty:
         st.session_state["brussels_show_api_info"] = False
     
     st.markdown("---")
