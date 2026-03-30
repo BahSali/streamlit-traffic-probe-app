@@ -28,6 +28,7 @@ from core.nav_panel import render_left_panel
 from core.styles import inject_styles
 from core.ui.brussels_controls import brussels_left_controls
 from visualisation.brussels_results import render_brussels_results_visualisation
+from core.brussels_api_docs import build_brussels_api_info
 
 st.set_page_config(page_title="Brussels", layout="wide")
 inject_styles()
@@ -993,6 +994,8 @@ with content_box:
 
     st.markdown("---")
     st.markdown("### API")
+    if "brussels_show_api_info" not in st.session_state:
+        st.session_state["brussels_show_api_info"] = False
     
     st.markdown("---")
     st.markdown("### Performance Analysis")
