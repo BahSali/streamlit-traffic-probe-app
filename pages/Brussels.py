@@ -973,9 +973,11 @@ with content_box:
         st.markdown(legend_html(), unsafe_allow_html=True)
 
     st.markdown("### Results")
+    priority_cols = ["timestamp", "segment_id", "segment_name", "bus_lines"]
+    existing_priority_cols = [c for c in priority_cols if c in enriched_snapshot_df.columns]
+    
     enriched_snapshot_df = enriched_snapshot_df[
-        ["segment_id", "segment_name", "bus_lines"] +
-        [c for c in enriched_snapshot_df.columns if c not in ["timestamp", "segment_id", "segment_name", "bus_lines"]]
+        existing_priority_cols + [c for c in enriched_snapshot_df.columns if c not in existing_priority_cols]
     ]
     if st.session_state["brussels_colorized"] and not enriched_snapshot_df.empty:
         enriched_snapshot_df = reorder_columns(
@@ -991,7 +993,8 @@ with content_box:
         )
 
     st.markdown("---")
-    render_brussels_results_visualisation(enriched_snapshot_df)
+    if st.session_state["brussels_colorized"] and not enriched_snapshot_df.empty:
+        render_brussels_results_visualisation(enriched_snapshot_df)
     
     st.markdown("---")
     st.markdown("### Overview")
