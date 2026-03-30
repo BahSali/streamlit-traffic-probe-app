@@ -11,16 +11,19 @@ def _prepare_results_df(results_df: pd.DataFrame) -> pd.DataFrame:
 
     df = results_df.copy()
 
+    rename_candidates = [
+        ("google_speed_kmh", "google_speed"),
+        ("bus_speed_kmh", "bus_speed"),
+        ("observed_speed", "bus_speed"),
+        ("stib_speed", "bus_speed"),
+        ("estimated_speed", "est_speed"),
+        ("predicted_speed", "est_speed"),
+    ]
+
     rename_map = {}
-
-    if "google_speed" not in df.columns and "google_speed_kmh" in df.columns:
-        rename_map["google_speed_kmh"] = "google_speed"
-
-    if "bus_speed" not in df.columns and "bus_speed_kmh" in df.columns:
-        rename_map["bus_speed_kmh"] = "bus_speed"
-
-    if "est_speed" not in df.columns and "estimated_speed" in df.columns:
-        rename_map["estimated_speed"] = "est_speed"
+    for old_name, new_name in rename_candidates:
+        if new_name not in df.columns and old_name in df.columns:
+            rename_map[old_name] = new_name
 
     if rename_map:
         df = df.rename(columns=rename_map)
@@ -39,7 +42,6 @@ def _prepare_results_df(results_df: pd.DataFrame) -> pd.DataFrame:
         df["bus_lines"] = ""
 
     return df
-
 
 def render_brussels_results_visualisation(results_df: pd.DataFrame) -> None:
     st.markdown("### Visualisation")
