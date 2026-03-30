@@ -11,15 +11,14 @@ def _prepare_results_df(results_df: pd.DataFrame) -> pd.DataFrame:
 
     df = results_df.copy().rename(
         columns={
-            "live_speed_kmh": "bus_speed_live",
-            "final_speed_kmh": "bus_speed_completed",
+            "final_speed_kmh": "bus_speed",
             "estimated_speed": "est_speed",
             "google_speed_kmh": "google_speed",
             "snapshot_time": "timestamp",
         }
     )
 
-    for col in ["bus_speed_live", "bus_speed_completed", "est_speed", "google_speed"]:
+    for col in ["bus_speed", "est_speed", "google_speed"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
