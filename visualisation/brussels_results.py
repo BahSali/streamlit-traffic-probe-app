@@ -34,7 +34,7 @@ def render_brussels_results_visualisation(results_df: pd.DataFrame) -> None:
 
     tab1, tab2, tab3, tab4, tab5 = st.tabs(
         [
-            "Coverage",
+            "Error Heatmap",
             "Estimation vs Google",
             "Error Analysis",
             "Distribution",
@@ -43,7 +43,7 @@ def render_brussels_results_visualisation(results_df: pd.DataFrame) -> None:
     )
 
     with tab1:
-        render_coverage_chart(df)
+        render_estimation_google_error_heatmap(df)
 
     with tab2:
         render_estimation_vs_google_scatter(df)
@@ -80,33 +80,44 @@ def render_summary_metrics(df: pd.DataFrame) -> None:
 
     st.caption(f"Rows with both Estimation and Google: {google_overlap}")
 
+def render_estimation_google_error_heatmap(df: pd.DataFrame) -> None:
+    required_cols = {"est_speed", "google_speed"}
+    if not required_cols.issubset(df.columns):
+        st.info("Required columns for error heatmap are not available.")
+        return
 
-def render_coverage_chart(df: pd.DataFrame) -> None:
-    coverage_df = pd.DataFrame(
-        {
-            "source": ["Bus", "Estimation", "Google"],
-            "count": [
-                int(df["bus_speed"].notna().sum()) if "bus_speed" in df.columns else 0,
-                int(df["est_speed"].notna().sum()) if "est_speed" in df.columns else 0,
-                int(df["google_speed"].notna().sum()) if "google_speed" in df.columns else 0,
-            ],
-        }
-    )
+    plot_df = df.dropna(subset=["est_speed", "google_speed"]).copy()
+    if plot_df.empty:
+        st.info("No overlapping Estimation and Google data available for heatmap.")
+        return
 
     chart = (
-        alt.Chart(coverage_df)
-        .mark_bar()
+        alt.Chart(plot_df)
+        .mark_rect()
         .encode(
-            x=alt.X("source:N", title="Source"),
-            y=alt.Y("count:Q", title="Available rows"),
-            tooltip=["source", "count"],
+            x=alt.X(
+                "google_speed:Q",
+                bin=alt.Bin(maxbins=15),
+                title="Google speed (km/h)",
+            ),
+            y=alt.Y(
+                "est_speed:Q",
+                bin=alt.Bin(maxbins=15),
+                title="Estimated speed (km/h)",
+            ),
+            color=alt.Color("count():Q", title="Segment count"),
+            tooltip=[
+                alt.Tooltip("count():Q", title="Count"),
+            ],
         )
-        .properties(height=320, title="Coverage by source")
+        .properties(
+            height=420,
+            title="Estimation vs Google error heatmap",
+        )
     )
 
     st.altair_chart(chart, use_container_width=True)
-
-
+    
 def render_estimation_vs_google_scatter(df: pd.DataFrame) -> None:
     required_cols = {"est_speed", "google_speed", "segment_id", "segment_name"}
     if not required_cols.issubset(df.columns):
