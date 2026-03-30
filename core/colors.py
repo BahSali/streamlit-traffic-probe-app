@@ -12,7 +12,7 @@ def get_speed_color(x):
 
 def legend_html():
     return """
-    <div style='font-weight:bold;margin-bottom:8px;'>Color Key</div>
+    <div style='font-weight:bold;margin-bottom:8px;'>Speed (km/h)</div>
     <div style='line-height:2;'>
       <span style="display:inline-block;width:22px;height:18px;background:#8B0000;border-radius:4px;margin-right:8px;"></span> 0–10<br>
       <span style="display:inline-block;width:22px;height:18px;background:#FF0000;border-radius:4px;margin-right:8px;"></span> 10–20<br>
