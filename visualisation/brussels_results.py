@@ -11,24 +11,47 @@ def _prepare_results_df(results_df: pd.DataFrame) -> pd.DataFrame:
 
     df = results_df.copy()
 
-    rename_candidates = [
-        ("google_speed_kmh", "google_speed"),
-        ("bus_speed_kmh", "bus_speed"),
-        ("observed_speed", "bus_speed"),
-        ("stib_speed", "bus_speed"),
-        ("estimated_speed", "est_speed"),
-        ("predicted_speed", "est_speed"),
+    rename_map = {
+        "google_speed_kmh": "google_speed",
+    }
+
+    for old_col, new_col in rename_map.items():
+        if old_col in df.columns and new_col not in df.columns:
+            df = df.rename(columns={old_col: new_col})
+
+    bus_live_candidates = [
+        "bus_speed",
+        "live_bus_speed",
+        "live_speed",
+        "stib_speed",
+    ]
+    bus_completed_candidates = [
+        "completed_bus_speed",
+        "final_completed_speed",
+        "snapshot_speed",
+        "observed_speed",
+        "speed",
     ]
 
-    rename_map = {}
-    for old_name, new_name in rename_candidates:
-        if new_name not in df.columns and old_name in df.columns:
-            rename_map[old_name] = new_name
+    if "bus_speed_live" not in df.columns:
+        for col in bus_live_candidates:
+            if col in df.columns:
+                df["bus_speed_live"] = df[col]
+                break
 
-    if rename_map:
-        df = df.rename(columns=rename_map)
+    if "bus_speed_completed" not in df.columns:
+        for col in bus_completed_candidates:
+            if col in df.columns:
+                df["bus_speed_completed"] = df[col]
+                break
 
-    for col in ["bus_speed", "est_speed", "google_speed"]:
+    if "est_speed" not in df.columns:
+        for col in ["estimated_speed", "prediction", "pred_speed"]:
+            if col in df.columns:
+                df["est_speed"] = df[col]
+                break
+
+    for col in ["bus_speed_live", "bus_speed_completed", "est_speed", "google_speed"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
@@ -42,7 +65,7 @@ def _prepare_results_df(results_df: pd.DataFrame) -> pd.DataFrame:
         df["bus_lines"] = ""
 
     return df
-
+    
 def render_brussels_results_visualisation(results_df: pd.DataFrame) -> None:
     st.markdown("### Visualisation")
 
