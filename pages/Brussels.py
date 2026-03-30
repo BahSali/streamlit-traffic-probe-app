@@ -970,7 +970,7 @@ with content_box:
     st.markdown("### Results")
     enriched_snapshot_df = enriched_snapshot_df[
         ["segment_id", "segment_name", "bus_lines"] +
-        [c for c in enriched_snapshot_df.columns if c not in ["segment_id", "segment_name", "bus_lines"]]
+        [c for c in enriched_snapshot_df.columns if c not in ["timestamp", "segment_id", "segment_name", "bus_lines"]]
     ]
     if st.session_state["brussels_colorized"] and not enriched_snapshot_df.empty:
         st.download_button(
