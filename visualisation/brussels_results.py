@@ -5,6 +5,32 @@ import streamlit as st
 import altair as alt
 
 
+def render_coverage_chart(df: pd.DataFrame) -> None:
+    coverage_df = pd.DataFrame(
+        {
+            "source": ["Bus", "Estimation", "Google"],
+            "count": [
+                int(df["bus_speed"].notna().sum()) if "bus_speed" in df.columns else 0,
+                int(df["est_speed"].notna().sum()) if "est_speed" in df.columns else 0,
+                int(df["google_speed"].notna().sum()) if "google_speed" in df.columns else 0,
+            ],
+        }
+    )
+
+    chart = (
+        alt.Chart(coverage_df)
+        .mark_bar()
+        .encode(
+            x=alt.X("source:N", title="Source"),
+            y=alt.Y("count:Q", title="Available rows"),
+            tooltip=["source", "count"],
+        )
+        .properties(height=320, title="Coverage by source")
+    )
+
+    st.altair_chart(chart, use_container_width=True)
+    
+
 def _prepare_results_df(results_df: pd.DataFrame) -> pd.DataFrame:
     if results_df is None or results_df.empty:
         return pd.DataFrame()
@@ -43,7 +69,7 @@ def render_brussels_results_visualisation(results_df: pd.DataFrame) -> None:
     )
 
     with tab1:
-        render_estimation_google_error_heatmap(df)
+        render_coverage_chart(df)
 
     with tab2:
         render_estimation_vs_google_scatter(df)
