@@ -223,18 +223,25 @@ def render_estimation_google_absolute_error_distribution(df: pd.DataFrame) -> No
 
     plot_df["absolute_error"] = (plot_df["est_speed"] - plot_df["google_speed"]).abs()
 
+    max_error = float(plot_df["absolute_error"].max())
+    max_bin = max(1, int(max_error) + 1)
+
     chart = (
         alt.Chart(plot_df)
         .mark_bar()
         .encode(
             x=alt.X(
                 "absolute_error:Q",
-                bin=alt.Bin(maxbins=30),
+                bin=alt.Bin(step=1, extent=[0, max_bin]),
                 title="Absolute Error |Estimated Speed - Google Speed| (km/h)",
             ),
-            y=alt.Y("count():Q", title="Number of Records"),
+            y=alt.Y(
+                "count():Q",
+                title="Distribution",
+                axis=alt.Axis(format="d", tickMinStep=1),
+            ),
             tooltip=[
-                alt.Tooltip("count():Q", title="Number of Records"),
+                alt.Tooltip("count():Q", title="Count"),
             ],
         )
         .properties(
@@ -253,7 +260,6 @@ def render_estimation_google_absolute_error_distribution(df: pd.DataFrame) -> No
     c1.metric("Mean Absolute Error", f"{mean_abs_error:.2f} km/h")
     c2.metric("Median Absolute Error", f"{median_abs_error:.2f} km/h")
     c3.metric("Maximum Absolute Error", f"{max_abs_error:.2f} km/h")
-
 
 def render_speed_distribution_chart(df: pd.DataFrame) -> None:
     parts = []
