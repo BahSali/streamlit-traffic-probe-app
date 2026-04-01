@@ -566,7 +566,7 @@ def prepare_brussels_page_payload(
             enriched_snapshot_df, _ = apply_temporary_estimation_correction(
                 enriched_snapshot_df,
                 est_col="est_speed",
-                google_col="google_speed",
+                google_col="google_speed_kmh",
                 threshold=3.5,
                 max_gap_below_google=3.0,
                 random_seed=42,
