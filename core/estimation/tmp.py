@@ -913,9 +913,12 @@ def run_tmp_model_inference(
         }
     )
 
+    
     prediction_df["est_speed"] = pd.to_numeric(prediction_df["est_speed"], errors="coerce")
-
-    street_fallback = base_snapshot_series.reindex(prediction_df["segment_id"]).to_numpy(dtype="float32")
+    
+    street_fallback = base_snapshot_series.reindex(
+        prediction_df["segment_id"]
+    ).to_numpy(dtype=np.float32)
     
     y_mean = config.get("y_scaler_mean")
     if y_mean is not None:
@@ -924,15 +927,29 @@ def run_tmp_model_inference(
         x_mean = config.get("x_scaler_mean")
         mean_fallback = np.asarray(x_mean, dtype=np.float32) if x_mean is not None else None
     
-    values = prediction_df["est_speed"].to_numpy(dtype=np.float32)
+    values = np.array(prediction_df["est_speed"], dtype=np.float32, copy=True)
     
     invalid_mask = ~np.isfinite(values) | (values <= 0)
     
     if mean_fallback is not None:
-        second_fallback = mean_fallback
+        second_fallback = np.array(mean_fallback, dtype=np.float32, copy=False)
     else:
-        second_fallback = np.full_like(values, np.nanmedian(street_fallback[np.isfinite(street_fallback)]))
+        finite_fallback = street_fallback[np.isfinite(street_fallback) & (street_fallback > 0)]
+        global_default = float(np.nanmedian(finite_fallback)) if finite_fallback.size > 0 else 20.0
+        second_fallback = np.full(values.shape, global_default, dtype=np.float32)
     
+    valid_street_fallback_mask = np.isfinite(street_fallback) & (street_fallback > 0)
+    use_street_mask = invalid_mask & valid_street_fallback_mask
+    values[use_street_mask] = street_fallback[use_street_mask]
+    
+    invalid_mask = ~np.isfinite(values) | (values <= 0)
+    values[invalid_mask] = second_fallback[invalid_mask]
+    
+    invalid_mask = ~np.isfinite(values) | (values <= 0)
+    values[invalid_mask] = second_fallback[invalid_mask]
+    
+    prediction_df["est_speed"] = values
+
     values[invalid_mask] = street_fallback[invalid_mask]
     
     invalid_mask = ~np.isfinite(values) | (values <= 0)
