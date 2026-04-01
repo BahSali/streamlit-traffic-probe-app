@@ -551,7 +551,7 @@ def prepare_brussels_page_payload(
 
         # --- tmp correction
         gdf, c_estimation_diagnostics = apply_temporary_estimation_correction(
-            gdf=gdf,
+            gdf,
             threshold=3.5,
             max_gap_below_google=3.0,
             random_seed=42,
