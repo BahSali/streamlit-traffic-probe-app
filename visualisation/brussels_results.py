@@ -69,7 +69,7 @@ def render_brussels_results_visualisation(results_df: pd.DataFrame) -> None:
     )
 
     with tab1:
-        render_coverage_chart(df)
+        render_estimation_google_error_heatmap(df)
 
     with tab2:
         render_estimation_vs_google_scatter(df)
