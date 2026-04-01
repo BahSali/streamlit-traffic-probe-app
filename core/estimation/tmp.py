@@ -696,13 +696,43 @@ def build_historical_feature_matrix(
 def fill_missing_historical_values(
     historical_df: pd.DataFrame,
     fallback_series: pd.Series,
+    config: dict[str, Any],
 ) -> pd.DataFrame:
+    """
+    Priority:
+      1) historical observed value
+      2) current snapshot speed
+      3) checkpoint x_scaler_mean per street
+      4) global median of available fallback values
+    """
     result = historical_df.copy()
 
-    for column in result.columns:
-        result[column] = result[column].fillna(fallback_series)
+    checkpoint_mean = config.get("x_scaler_mean")
+    if checkpoint_mean is not None:
+        checkpoint_mean_series = pd.Series(
+            checkpoint_mean,
+            index=result.index,
+            dtype="float32",
+        )
+    else:
+        checkpoint_mean_series = pd.Series(index=result.index, dtype="float32")
 
-    result = result.fillna(0.0).astype("float32")
+    global_fallback = pd.concat(
+        [
+            fallback_series.dropna().astype("float32"),
+            checkpoint_mean_series.dropna().astype("float32"),
+        ]
+    )
+
+    global_value = float(global_fallback.median()) if not global_fallback.empty else 20.0
+
+    for column in result.columns:
+        col = result[column]
+        col = col.fillna(fallback_series)
+        col = col.fillna(checkpoint_mean_series)
+        col = col.fillna(global_value)
+        result[column] = col.astype("float32")
+
     return result
 
 
@@ -825,6 +855,7 @@ def run_tmp_model_inference(
         historical_df = fill_missing_historical_values(
             historical_df=historical_df,
             fallback_series=base_snapshot_series,
+            config=config,
         )
     except Exception as exc:
         diagnostics["used_fallback_window"] = True
@@ -883,7 +914,31 @@ def run_tmp_model_inference(
     )
 
     prediction_df["est_speed"] = pd.to_numeric(prediction_df["est_speed"], errors="coerce")
-    prediction_df["est_speed"] = prediction_df["est_speed"].clip(lower=0)
+
+    street_fallback = base_snapshot_series.reindex(prediction_df["segment_id"]).to_numpy(dtype="float32")
+    
+    y_mean = config.get("y_scaler_mean")
+    if y_mean is not None:
+        mean_fallback = np.asarray(y_mean, dtype=np.float32)
+    else:
+        x_mean = config.get("x_scaler_mean")
+        mean_fallback = np.asarray(x_mean, dtype=np.float32) if x_mean is not None else None
+    
+    values = prediction_df["est_speed"].to_numpy(dtype=np.float32)
+    
+    invalid_mask = ~np.isfinite(values) | (values <= 0)
+    
+    if mean_fallback is not None:
+        second_fallback = mean_fallback
+    else:
+        second_fallback = np.full_like(values, np.nanmedian(street_fallback[np.isfinite(street_fallback)]))
+    
+    values[invalid_mask] = street_fallback[invalid_mask]
+    
+    invalid_mask = ~np.isfinite(values) | (values <= 0)
+    values[invalid_mask] = second_fallback[invalid_mask]
+    
+    prediction_df["est_speed"] = values
 
     return prediction_df, diagnostics
 
