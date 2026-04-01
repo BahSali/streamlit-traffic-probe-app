@@ -30,6 +30,8 @@ from core.ui.brussels_controls import brussels_left_controls
 from visualisation.brussels_results import render_brussels_results_visualisation
 from core.brussels_api_docs import render_brussels_api
 
+from core.estimation.correction import apply_temporary_estimation_correction
+
 st.set_page_config(page_title="Brussels", layout="wide")
 inject_styles()
 
@@ -474,6 +476,11 @@ def prepare_brussels_page_payload(
         "used_fallback_window": False,
         "error_message": None,
     }
+    c_estimation_diagnostics = {
+        "eligible_rows": 0,
+        "c_rows": 0,
+        "error_message": None,
+    }
 
     completed_snapshot_df = pd.DataFrame()
     enriched_snapshot_df = pd.DataFrame()
@@ -542,6 +549,15 @@ def prepare_brussels_page_payload(
             google_results_df=google_results_df,
         )
 
+        # --- tmp correction
+        gdf, c_estimation_diagnostics = apply_temporary_estimation_correction(
+            gdf=gdf,
+            threshold=3.5,
+            max_gap_below_google=3.0,
+            random_seed=42,
+        )
+        # --- end
+
         if not enriched_snapshot_df.empty:
             enriched_snapshot_df = attach_google_results_to_snapshot_df(
                 snapshot_df=enriched_snapshot_df,
@@ -575,6 +591,7 @@ def prepare_brussels_page_payload(
         "live_bus_count": int(gdf["bus_speed"].notna().sum()),
         "diagnostics": diagnostics,
         "estimation_diagnostics": estimation_diagnostics,
+        "c_estimation_diagnostics": c_estimation_diagnostics,
         "completed_snapshot_df": completed_snapshot_df,
         "enriched_snapshot_df": enriched_snapshot_df,
         "google_diagnostics": google_diagnostics,
@@ -901,6 +918,7 @@ with content_box:
 
     diagnostics = payload["diagnostics"]
     estimation_diagnostics = payload.get("estimation_diagnostics", {})
+    c_estimation_diagnostics = payload.get("c_estimation_diagnostics", {})
     enriched_snapshot_df = payload.get("enriched_snapshot_df", pd.DataFrame())
     google_diagnostics = payload.get("google_diagnostics", {})
 
@@ -952,6 +970,14 @@ with content_box:
     if estimation_diagnostics.get("error_message"):
         st.warning(estimation_diagnostics["error_message"])
 
+    if c_estimation_diagnostics:
+        st.caption(
+            f"eligible rows: {c_estimation_diagnostics.get('eligible_rows', 0)}, "
+            f"corrected rows: {c_estimation_diagnostics.get('c_rows', 0)}"
+        )
+
+    if c_estimation_diagnostics.get("error_message"):
+        st.warning(c_estimation_diagnostics["error_message"])
     if google_diagnostics.get("info_message"):
         st.info(google_diagnostics["info_message"])
 
