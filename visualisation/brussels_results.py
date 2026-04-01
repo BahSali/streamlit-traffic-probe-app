@@ -35,16 +35,16 @@ def render_brussels_results_visualisation(results_df: pd.DataFrame) -> None:
 
     tab1, tab2, tab3, tab4, tab5 = st.tabs(
         [
-            "Street Error Bar Plot",
-            "Estimation vs Google",
-            "Error Distribution",
-            "Distribution",
-            "Preview",
+            "Street-Level Error",
+            "Estimated vs Google",
+            "Signed Error Distribution",
+            "Speed Distribution",
+            "Data Preview",
         ]
     )
 
     with tab1:
-        render_estimation_google_error_by_street_chart(df)
+        render_estimation_google_abs_error_by_street_chart(df)
 
     with tab2:
         render_estimation_vs_google_scatter(df)
@@ -72,45 +72,45 @@ def render_summary_metrics(df: pd.DataFrame) -> None:
             ).abs().mean()
 
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total rows", len(df))
+    col1.metric("Total Rows", len(df))
     col2.metric(
-        "Bus available",
+        "Rows with Bus Speed",
         int(df["bus_speed"].notna().sum()) if "bus_speed" in df.columns else 0,
     )
     col3.metric(
-        "Google available",
+        "Rows with Google Speed",
         int(df["google_speed"].notna().sum()) if "google_speed" in df.columns else 0,
     )
     col4.metric(
-        "Mean |Est-Google|",
+        "Mean Absolute Error",
         f"{mean_abs_error:.2f} km/h" if mean_abs_error is not None else "N/A",
     )
 
-    st.caption(f"Rows with both Estimation and Google: {google_overlap}")
+    st.caption(f"Rows with both Estimated and Google speed values: {google_overlap}")
 
 
-def render_estimation_google_error_by_street_chart(df: pd.DataFrame) -> None:
+def render_estimation_google_abs_error_by_street_chart(df: pd.DataFrame) -> None:
     required_cols = {"segment_name", "est_speed", "google_speed"}
     if not required_cols.issubset(df.columns):
-        st.info("Required columns for street error chart are not available.")
+        st.info("Required columns for the street-level error chart are not available.")
         return
 
     plot_df = df.dropna(subset=["segment_name", "est_speed", "google_speed"]).copy()
     if plot_df.empty:
-        st.info("No overlapping Estimation and Google data available for street error chart.")
+        st.info("No overlapping Estimated and Google speed data are available.")
         return
 
-    plot_df["abs_error"] = (plot_df["est_speed"] - plot_df["google_speed"]).abs()
+    plot_df["absolute_error"] = (plot_df["est_speed"] - plot_df["google_speed"]).abs()
 
     street_error_df = (
         plot_df.groupby("segment_name", as_index=False)
         .agg(
-            mean_abs_error=("abs_error", "mean"),
-            row_count=("abs_error", "size"),
-            mean_est_speed=("est_speed", "mean"),
+            mean_absolute_error=("absolute_error", "mean"),
+            sample_count=("absolute_error", "size"),
+            mean_estimated_speed=("est_speed", "mean"),
             mean_google_speed=("google_speed", "mean"),
         )
-        .sort_values("mean_abs_error", ascending=False)
+        .sort_values("mean_absolute_error", ascending=False)
         .head(20)
     )
 
@@ -118,19 +118,39 @@ def render_estimation_google_error_by_street_chart(df: pd.DataFrame) -> None:
         alt.Chart(street_error_df)
         .mark_bar()
         .encode(
-            x=alt.X("mean_abs_error:Q", title="Mean absolute error |Est - Google| (km/h)"),
-            y=alt.Y("segment_name:N", sort="-x", title="Street name"),
+            x=alt.X(
+                "mean_absolute_error:Q",
+                title="Mean Absolute Error between Estimated and Google Speed (km/h)",
+                scale=alt.Scale(domainMin=0),
+            ),
+            y=alt.Y(
+                "segment_name:N",
+                sort="-x",
+                title="Street Name",
+            ),
             tooltip=[
-                alt.Tooltip("segment_name:N", title="Street"),
-                alt.Tooltip("mean_abs_error:Q", title="Mean absolute error", format=".2f"),
-                alt.Tooltip("mean_est_speed:Q", title="Mean estimation speed", format=".2f"),
-                alt.Tooltip("mean_google_speed:Q", title="Mean Google speed", format=".2f"),
-                alt.Tooltip("row_count:Q", title="Row count"),
+                alt.Tooltip("segment_name:N", title="Street Name"),
+                alt.Tooltip(
+                    "mean_absolute_error:Q",
+                    title="Mean Absolute Error (km/h)",
+                    format=".2f",
+                ),
+                alt.Tooltip(
+                    "mean_estimated_speed:Q",
+                    title="Mean Estimated Speed (km/h)",
+                    format=".2f",
+                ),
+                alt.Tooltip(
+                    "mean_google_speed:Q",
+                    title="Mean Google Speed (km/h)",
+                    format=".2f",
+                ),
+                alt.Tooltip("sample_count:Q", title="Number of Records"),
             ],
         )
         .properties(
-            height=520,
-            title="Top street errors: Estimation vs Google",
+            height=560,
+            title="Top 20 Streets with the Highest Mean Absolute Error",
         )
     )
 
@@ -140,35 +160,30 @@ def render_estimation_google_error_by_street_chart(df: pd.DataFrame) -> None:
 def render_estimation_vs_google_scatter(df: pd.DataFrame) -> None:
     required_cols = {"est_speed", "google_speed", "segment_id", "segment_name"}
     if not required_cols.issubset(df.columns):
-        st.info("Required columns for Estimation vs Google scatter are not available.")
+        st.info("Required columns for the Estimated vs Google scatter plot are not available.")
         return
 
     plot_df = df.dropna(subset=["est_speed", "google_speed"]).copy()
     if plot_df.empty:
-        st.info("No overlapping Estimation and Google data available.")
+        st.info("No overlapping Estimated and Google speed data are available.")
         return
 
     min_val = min(plot_df["google_speed"].min(), plot_df["est_speed"].min())
     max_val = max(plot_df["google_speed"].max(), plot_df["est_speed"].max())
 
-    diagonal_df = pd.DataFrame(
-        {
-            "x": [min_val, max_val],
-            "y": [min_val, max_val],
-        }
-    )
+    diagonal_df = pd.DataFrame({"x": [min_val, max_val], "y": [min_val, max_val]})
 
     points = (
         alt.Chart(plot_df)
         .mark_circle(size=80)
         .encode(
-            x=alt.X("google_speed:Q", title="Google speed (km/h)"),
-            y=alt.Y("est_speed:Q", title="Estimated speed (km/h)"),
+            x=alt.X("google_speed:Q", title="Google Speed (km/h)"),
+            y=alt.Y("est_speed:Q", title="Estimated Speed (km/h)"),
             tooltip=[
                 alt.Tooltip("segment_id:N", title="Segment ID"),
-                alt.Tooltip("segment_name:N", title="Segment"),
-                alt.Tooltip("google_speed:Q", title="Google", format=".2f"),
-                alt.Tooltip("est_speed:Q", title="Estimation", format=".2f"),
+                alt.Tooltip("segment_name:N", title="Street Name"),
+                alt.Tooltip("google_speed:Q", title="Google Speed (km/h)", format=".2f"),
+                alt.Tooltip("est_speed:Q", title="Estimated Speed (km/h)", format=".2f"),
             ],
         )
     )
@@ -176,15 +191,12 @@ def render_estimation_vs_google_scatter(df: pd.DataFrame) -> None:
     diagonal = (
         alt.Chart(diagonal_df)
         .mark_line()
-        .encode(
-            x="x:Q",
-            y="y:Q",
-        )
+        .encode(x="x:Q", y="y:Q")
     )
 
     chart = (points + diagonal).properties(
-        height=380,
-        title="Estimation vs Google",
+        height=400,
+        title="Estimated Speed versus Google Speed",
     )
 
     st.altair_chart(chart, use_container_width=True)
@@ -193,12 +205,12 @@ def render_estimation_vs_google_scatter(df: pd.DataFrame) -> None:
 def render_estimation_google_signed_error_distribution(df: pd.DataFrame) -> None:
     required_cols = {"est_speed", "google_speed"}
     if not required_cols.issubset(df.columns):
-        st.info("Required columns for signed error distribution are not available.")
+        st.info("Required columns for the signed error distribution are not available.")
         return
 
     plot_df = df.dropna(subset=["est_speed", "google_speed"]).copy()
     if plot_df.empty:
-        st.info("No overlapping Estimation and Google data available for error distribution.")
+        st.info("No overlapping Estimated and Google speed data are available.")
         return
 
     plot_df["signed_error"] = plot_df["est_speed"] - plot_df["google_speed"]
@@ -210,16 +222,14 @@ def render_estimation_google_signed_error_distribution(df: pd.DataFrame) -> None
             x=alt.X(
                 "signed_error:Q",
                 bin=alt.Bin(maxbins=30),
-                title="Signed error (Estimation - Google) [km/h]",
+                title="Signed Error: Estimated Speed - Google Speed (km/h)",
             ),
-            y=alt.Y("count():Q", title="Number of rows"),
-            tooltip=[
-                alt.Tooltip("count():Q", title="Count"),
-            ],
+            y=alt.Y("count():Q", title="Number of Records"),
+            tooltip=[alt.Tooltip("count():Q", title="Number of Records")],
         )
         .properties(
             height=420,
-            title="Distribution of signed errors",
+            title="Distribution of Signed Error",
         )
     )
 
@@ -230,9 +240,9 @@ def render_estimation_google_signed_error_distribution(df: pd.DataFrame) -> None
     mean_abs_error = plot_df["signed_error"].abs().mean()
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("Mean signed error", f"{mean_signed_error:.2f} km/h")
-    c2.metric("Median signed error", f"{median_signed_error:.2f} km/h")
-    c3.metric("Mean absolute error", f"{mean_abs_error:.2f} km/h")
+    c1.metric("Mean Signed Error", f"{mean_signed_error:.2f} km/h")
+    c2.metric("Median Signed Error", f"{median_signed_error:.2f} km/h")
+    c3.metric("Mean Absolute Error", f"{mean_abs_error:.2f} km/h")
 
 
 def render_speed_distribution_chart(df: pd.DataFrame) -> None:
@@ -240,7 +250,7 @@ def render_speed_distribution_chart(df: pd.DataFrame) -> None:
 
     for source_name, col in [
         ("Bus", "bus_speed"),
-        ("Estimation", "est_speed"),
+        ("Estimated", "est_speed"),
         ("Google", "google_speed"),
     ]:
         if col in df.columns:
@@ -250,25 +260,25 @@ def render_speed_distribution_chart(df: pd.DataFrame) -> None:
             parts.append(tmp)
 
     if not parts:
-        st.info("No speed columns available for distribution chart.")
+        st.info("No speed columns are available for the distribution chart.")
         return
 
     long_df = pd.concat(parts, ignore_index=True)
     long_df = long_df.dropna(subset=["speed"])
 
     if long_df.empty:
-        st.info("No non-null speed values available for distribution chart.")
+        st.info("No non-null speed values are available for the distribution chart.")
         return
 
     chart = (
         alt.Chart(long_df)
         .mark_boxplot()
         .encode(
-            x=alt.X("source:N", title="Source"),
+            x=alt.X("source:N", title="Data Source"),
             y=alt.Y("speed:Q", title="Speed (km/h)"),
-            tooltip=[alt.Tooltip("source:N", title="Source")],
+            tooltip=[alt.Tooltip("source:N", title="Data Source")],
         )
-        .properties(height=380, title="Speed distribution by source")
+        .properties(height=380, title="Speed Distribution by Data Source")
     )
 
     st.altair_chart(chart, use_container_width=True)
