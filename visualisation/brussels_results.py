@@ -37,7 +37,7 @@ def render_brussels_results_visualisation(results_df: pd.DataFrame) -> None:
         [
             "Street-Level Error",
             "Estimated vs Google",
-            "Signed Error Distribution",
+            "Absolute Error Distribution",
             "Speed Distribution",
             "Data Preview",
         ]
@@ -50,7 +50,7 @@ def render_brussels_results_visualisation(results_df: pd.DataFrame) -> None:
         render_estimation_vs_google_scatter(df)
 
     with tab3:
-        render_estimation_google_signed_error_distribution(df)
+        render_estimation_google_absolute_error_distribution(df)
 
     with tab4:
         render_speed_distribution_chart(df)
@@ -120,7 +120,7 @@ def render_estimation_google_abs_error_by_street_chart(df: pd.DataFrame) -> None
         .encode(
             x=alt.X(
                 "mean_absolute_error:Q",
-                title="Mean Absolute Error between Estimated and Google Speed (km/h)",
+                title="Mean Absolute Error |Estimated Speed - Google Speed| (km/h)",
                 scale=alt.Scale(domainMin=0),
             ),
             y=alt.Y(
@@ -171,7 +171,12 @@ def render_estimation_vs_google_scatter(df: pd.DataFrame) -> None:
     min_val = min(plot_df["google_speed"].min(), plot_df["est_speed"].min())
     max_val = max(plot_df["google_speed"].max(), plot_df["est_speed"].max())
 
-    diagonal_df = pd.DataFrame({"x": [min_val, max_val], "y": [min_val, max_val]})
+    diagonal_df = pd.DataFrame(
+        {
+            "x": [min_val, max_val],
+            "y": [min_val, max_val],
+        }
+    )
 
     points = (
         alt.Chart(plot_df)
@@ -191,7 +196,10 @@ def render_estimation_vs_google_scatter(df: pd.DataFrame) -> None:
     diagonal = (
         alt.Chart(diagonal_df)
         .mark_line()
-        .encode(x="x:Q", y="y:Q")
+        .encode(
+            x=alt.X("x:Q", title="Google Speed (km/h)"),
+            y=alt.Y("y:Q", title="Estimated Speed (km/h)"),
+        )
     )
 
     chart = (points + diagonal).properties(
@@ -202,10 +210,10 @@ def render_estimation_vs_google_scatter(df: pd.DataFrame) -> None:
     st.altair_chart(chart, use_container_width=True)
 
 
-def render_estimation_google_signed_error_distribution(df: pd.DataFrame) -> None:
+def render_estimation_google_absolute_error_distribution(df: pd.DataFrame) -> None:
     required_cols = {"est_speed", "google_speed"}
     if not required_cols.issubset(df.columns):
-        st.info("Required columns for the signed error distribution are not available.")
+        st.info("Required columns for the absolute error distribution are not available.")
         return
 
     plot_df = df.dropna(subset=["est_speed", "google_speed"]).copy()
@@ -213,36 +221,38 @@ def render_estimation_google_signed_error_distribution(df: pd.DataFrame) -> None
         st.info("No overlapping Estimated and Google speed data are available.")
         return
 
-    plot_df["signed_error"] = plot_df["est_speed"] - plot_df["google_speed"]
+    plot_df["absolute_error"] = (plot_df["est_speed"] - plot_df["google_speed"]).abs()
 
     chart = (
         alt.Chart(plot_df)
         .mark_bar()
         .encode(
             x=alt.X(
-                "signed_error:Q",
+                "absolute_error:Q",
                 bin=alt.Bin(maxbins=30),
-                title="Signed Error: Estimated Speed - Google Speed (km/h)",
+                title="Absolute Error |Estimated Speed - Google Speed| (km/h)",
             ),
             y=alt.Y("count():Q", title="Number of Records"),
-            tooltip=[alt.Tooltip("count():Q", title="Number of Records")],
+            tooltip=[
+                alt.Tooltip("count():Q", title="Number of Records"),
+            ],
         )
         .properties(
             height=420,
-            title="Distribution of Signed Error",
+            title="Distribution of Absolute Error",
         )
     )
 
     st.altair_chart(chart, use_container_width=True)
 
-    mean_signed_error = plot_df["signed_error"].mean()
-    median_signed_error = plot_df["signed_error"].median()
-    mean_abs_error = plot_df["signed_error"].abs().mean()
+    mean_abs_error = plot_df["absolute_error"].mean()
+    median_abs_error = plot_df["absolute_error"].median()
+    max_abs_error = plot_df["absolute_error"].max()
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("Mean Signed Error", f"{mean_signed_error:.2f} km/h")
-    c2.metric("Median Signed Error", f"{median_signed_error:.2f} km/h")
-    c3.metric("Mean Absolute Error", f"{mean_abs_error:.2f} km/h")
+    c1.metric("Mean Absolute Error", f"{mean_abs_error:.2f} km/h")
+    c2.metric("Median Absolute Error", f"{median_abs_error:.2f} km/h")
+    c3.metric("Maximum Absolute Error", f"{max_abs_error:.2f} km/h")
 
 
 def render_speed_distribution_chart(df: pd.DataFrame) -> None:
@@ -278,7 +288,10 @@ def render_speed_distribution_chart(df: pd.DataFrame) -> None:
             y=alt.Y("speed:Q", title="Speed (km/h)"),
             tooltip=[alt.Tooltip("source:N", title="Data Source")],
         )
-        .properties(height=380, title="Speed Distribution by Data Source")
+        .properties(
+            height=380,
+            title="Speed Distribution by Data Source",
+        )
     )
 
     st.altair_chart(chart, use_container_width=True)
