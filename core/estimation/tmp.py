@@ -23,6 +23,10 @@ PARQUET_MARGIN_MINUTES = 30
 PARQUET_BUCKET_MINUTES = 15
 REQUEST_TIMEOUT_SECONDS = 45
 
+# Physical / business guardrail
+MIN_VALID_SPEED_KMH = 2.0
+DEFAULT_GLOBAL_SPEED_KMH = 20.0
+
 
 class RefinerCNN(nn.Module):
     """
@@ -136,8 +140,58 @@ def build_empty_estimation_diagnostics() -> dict[str, Any]:
         "street_alignment_mode": "checkpoint_street_names",
         "missing_checkpoint_segments_in_snapshot": 0,
         "extra_snapshot_segments_not_in_checkpoint": 0,
+        "postprocess_min_speed_kmh": MIN_VALID_SPEED_KMH,
         "error_message": None,
     }
+
+
+def _normalize_segment_id_value(value: Any) -> str:
+    if pd.isna(value):
+        return ""
+
+    text = str(value).strip()
+    if not text:
+        return ""
+
+    # Make "123.0" -> "123"
+    try:
+        as_float = float(text)
+        if np.isfinite(as_float) and as_float.is_integer():
+            return str(int(as_float))
+    except Exception:
+        pass
+
+    return text
+
+
+def _normalize_segment_id_series(series: pd.Series) -> pd.Series:
+    return series.apply(_normalize_segment_id_value)
+
+
+def _valid_speed_mask(arr: np.ndarray | pd.Series, min_speed: float = MIN_VALID_SPEED_KMH) -> np.ndarray:
+    values = np.asarray(arr, dtype=np.float32)
+    return np.isfinite(values) & (values >= float(min_speed))
+
+
+def _safe_positive_median(*arrays: Any, min_speed: float = MIN_VALID_SPEED_KMH, default: float = DEFAULT_GLOBAL_SPEED_KMH) -> float:
+    pieces: list[np.ndarray] = []
+
+    for arr in arrays:
+        if arr is None:
+            continue
+        vals = np.asarray(arr, dtype=np.float32).reshape(-1)
+        vals = vals[np.isfinite(vals) & (vals >= float(min_speed))]
+        if vals.size > 0:
+            pieces.append(vals)
+
+    if not pieces:
+        return float(default)
+
+    merged = np.concatenate(pieces)
+    if merged.size == 0:
+        return float(default)
+
+    return float(np.median(merged))
 
 
 def get_snapshot_timestamp(completed_snapshot_df: pd.DataFrame) -> pd.Timestamp | None:
@@ -210,6 +264,9 @@ def infer_model_config(checkpoint: dict[str, Any]) -> dict[str, Any]:
     topk = int(model_kwargs.get("topk", 4))
     hidden = int(model_kwargs.get("hidden", hidden))
 
+    street_names = [str(x).strip() for x in checkpoint.get("street_names", [])]
+    street_names = [_normalize_segment_id_value(x) for x in street_names]
+
     return {
         "window_size": window_size,
         "num_streets": num_streets,
@@ -217,7 +274,7 @@ def infer_model_config(checkpoint: dict[str, Any]) -> dict[str, Any]:
         "topk": topk,
         "delta_scale": delta_scale,
         "enforce_nonneg": enforce_nonneg,
-        "street_names": [str(x).strip() for x in checkpoint.get("street_names", [])],
+        "street_names": street_names,
         "recent_steps": int(checkpoint.get("recent_steps", 4)),
         "use_daily_lag": bool(checkpoint.get("use_daily_lag", True)),
         "use_weekly_lag": bool(checkpoint.get("use_weekly_lag", True)),
@@ -280,7 +337,7 @@ def build_segment_lookup_from_gpkg(gpkg_path: str) -> pd.DataFrame:
         )
 
     lookup_df = gdf[["id", "start_id", "bus_lines"]].copy()
-    lookup_df["segment_id"] = lookup_df["id"].astype(str).str.strip()
+    lookup_df["segment_id"] = _normalize_segment_id_series(lookup_df["id"])
     lookup_df["pointId"] = pd.to_numeric(lookup_df["start_id"], errors="coerce")
     lookup_df["bus_lines"] = lookup_df["bus_lines"].fillna("").astype(str)
 
@@ -553,12 +610,6 @@ def build_historical_window_plan_from_checkpoint(
     use_daily_lag: bool,
     use_weekly_lag: bool,
 ) -> list[tuple[str, pd.Timestamp | None]]:
-    """
-    Training semantics:
-      - recent intra-day frames: oldest -> newest among previous same-day buckets
-      - daily lag: t - 1 day
-      - weekly lags: t - 7d, 14d, 21d
-    """
     bucket_time = floor_to_15_minutes(snapshot_time)
     plan: list[tuple[str, pd.Timestamp | None]] = []
 
@@ -593,7 +644,7 @@ def prepare_snapshot_series_aligned_to_checkpoint(
         )
 
     working_df = completed_snapshot_df.copy()
-    working_df["segment_id"] = working_df["segment_id"].astype(str).str.strip()
+    working_df["segment_id"] = _normalize_segment_id_series(working_df["segment_id"])
     working_df["final_speed_kmh"] = pd.to_numeric(
         working_df["final_speed_kmh"],
         errors="coerce",
@@ -606,7 +657,7 @@ def prepare_snapshot_series_aligned_to_checkpoint(
     )
 
     checkpoint_index = pd.Index(
-        [str(x).strip() for x in checkpoint_street_names],
+        [_normalize_segment_id_value(x) for x in checkpoint_street_names],
         name="segment_id",
     )
     aligned = snapshot_series.reindex(checkpoint_index)
@@ -677,13 +728,6 @@ def fill_missing_historical_values(
     fallback_series: pd.Series,
     config: dict[str, Any],
 ) -> pd.DataFrame:
-    """
-    Priority:
-      1) historical observed value
-      2) current snapshot speed
-      3) checkpoint x_scaler_mean per street
-      4) global median fallback
-    """
     result = historical_df.copy()
 
     checkpoint_mean = config.get("x_scaler_mean")
@@ -696,19 +740,20 @@ def fill_missing_historical_values(
     else:
         checkpoint_mean_series = pd.Series(index=result.index, dtype="float32")
 
-    global_candidates = pd.concat(
-        [
-            fallback_series[np.isfinite(fallback_series) & (fallback_series > 0)].astype("float32"),
-            checkpoint_mean_series[np.isfinite(checkpoint_mean_series) & (checkpoint_mean_series > 0)].astype("float32"),
-        ]
+    global_value = _safe_positive_median(
+        fallback_series,
+        checkpoint_mean_series,
+        min_speed=MIN_VALID_SPEED_KMH,
+        default=DEFAULT_GLOBAL_SPEED_KMH,
     )
-    global_value = float(global_candidates.median()) if not global_candidates.empty else 20.0
 
     for column in result.columns:
         col = result[column]
         col = col.fillna(fallback_series)
         col = col.fillna(checkpoint_mean_series)
         col = col.fillna(global_value)
+        col = pd.to_numeric(col, errors="coerce")
+        col = col.mask(col < MIN_VALID_SPEED_KMH, global_value)
         result[column] = col.astype("float32")
 
     return result
@@ -843,9 +888,21 @@ def run_tmp_model_inference(
             use_weekly_lag=bool(config["use_weekly_lag"]),
         )
 
+        global_value = _safe_positive_median(
+            base_snapshot_series,
+            config.get("x_scaler_mean"),
+            config.get("y_scaler_mean"),
+            min_speed=MIN_VALID_SPEED_KMH,
+            default=DEFAULT_GLOBAL_SPEED_KMH,
+        )
+
         fallback_df = pd.DataFrame(index=ordered_segment_ids)
+        safe_snapshot_series = base_snapshot_series.copy()
+        safe_snapshot_series = safe_snapshot_series.fillna(global_value)
+        safe_snapshot_series = safe_snapshot_series.mask(safe_snapshot_series < MIN_VALID_SPEED_KMH, global_value)
+
         for label, _ in plan:
-            fallback_df[label] = base_snapshot_series
+            fallback_df[label] = safe_snapshot_series
 
         historical_df = fallback_df.astype("float32")
         diagnostics["historical_window_ready"] = False
@@ -854,7 +911,8 @@ def run_tmp_model_inference(
             bucket.isoformat() if bucket is not None else None for _, bucket in plan
         ]
         diagnostics["historical_non_null_counts"] = {
-            label: int(base_snapshot_series.notna().sum()) for label, _ in plan
+            label: int(np.sum(np.isfinite(safe_snapshot_series.to_numpy(dtype=np.float32))))
+            for label, _ in plan
         }
 
     if historical_df.shape[1] != int(config["window_size"]):
@@ -891,28 +949,42 @@ def run_tmp_model_inference(
     street_fallback = base_snapshot_series.reindex(prediction_df["segment_id"]).to_numpy(dtype=np.float32)
 
     y_mean = config.get("y_scaler_mean")
+    x_mean = config.get("x_scaler_mean")
+    global_default = _safe_positive_median(
+        street_fallback,
+        y_mean,
+        x_mean,
+        min_speed=MIN_VALID_SPEED_KMH,
+        default=DEFAULT_GLOBAL_SPEED_KMH,
+    )
+
     if y_mean is not None:
         second_fallback = np.asarray(y_mean, dtype=np.float32)
+    elif x_mean is not None:
+        second_fallback = np.asarray(x_mean, dtype=np.float32)
     else:
-        x_mean = config.get("x_scaler_mean")
-        if x_mean is not None:
-            second_fallback = np.asarray(x_mean, dtype=np.float32)
-        else:
-            finite_fallback = street_fallback[np.isfinite(street_fallback) & (street_fallback > 0)]
-            global_default = float(np.nanmedian(finite_fallback)) if finite_fallback.size > 0 else 20.0
-            second_fallback = np.full(len(prediction_df), global_default, dtype=np.float32)
+        second_fallback = np.full(len(prediction_df), global_default, dtype=np.float32)
+
+    second_fallback = np.asarray(second_fallback, dtype=np.float32)
+    if second_fallback.shape[0] != len(prediction_df):
+        second_fallback = np.full(len(prediction_df), global_default, dtype=np.float32)
 
     values = np.array(prediction_df["est_speed"], dtype=np.float32, copy=True)
 
-    invalid_mask = ~np.isfinite(values) | (values <= 0)
-
-    valid_street_fallback_mask = np.isfinite(street_fallback) & (street_fallback > 0)
+    invalid_mask = ~_valid_speed_mask(values)
+    valid_street_fallback_mask = _valid_speed_mask(street_fallback)
     use_street_mask = invalid_mask & valid_street_fallback_mask
     values[use_street_mask] = street_fallback[use_street_mask]
 
-    invalid_mask = ~np.isfinite(values) | (values <= 0)
-    values[invalid_mask] = second_fallback[invalid_mask]
+    invalid_mask = ~_valid_speed_mask(values)
+    valid_second_mask = _valid_speed_mask(second_fallback)
+    use_second_mask = invalid_mask & valid_second_mask
+    values[use_second_mask] = second_fallback[use_second_mask]
 
+    invalid_mask = ~_valid_speed_mask(values)
+    values[invalid_mask] = global_default
+
+    values = np.maximum(values, MIN_VALID_SPEED_KMH).astype(np.float32)
     prediction_df["est_speed"] = values
 
     return prediction_df, diagnostics
@@ -932,16 +1004,36 @@ def attach_prediction_df_to_gdf(
         result["est_speed"] = pd.NA
         return result, 0
 
+    pred_df = prediction_df.copy()
+    pred_df["segment_id_norm"] = _normalize_segment_id_series(pred_df["segment_id"])
+
     lookup = dict(
         zip(
-            prediction_df["segment_id"].astype(str).str.strip(),
-            prediction_df["est_speed"],
+            pred_df["segment_id_norm"],
+            pd.to_numeric(pred_df["est_speed"], errors="coerce"),
         )
     )
 
-    result["segment_id_str"] = result["id"].astype(str).str.strip()
+    result["segment_id_str"] = _normalize_segment_id_series(result["id"])
     result["est_speed"] = result["segment_id_str"].map(lookup)
-    matched_segments = int(result["est_speed"].notna().sum())
+
+    valid_pred = pd.to_numeric(pred_df["est_speed"], errors="coerce")
+    global_default = _safe_positive_median(
+        valid_pred,
+        default=DEFAULT_GLOBAL_SPEED_KMH,
+        min_speed=MIN_VALID_SPEED_KMH,
+    )
+
+    if "bus_speed" in result.columns:
+        bus_speed_numeric = pd.to_numeric(result["bus_speed"], errors="coerce")
+        use_bus_mask = result["est_speed"].isna() & bus_speed_numeric.ge(MIN_VALID_SPEED_KMH)
+        result.loc[use_bus_mask, "est_speed"] = bus_speed_numeric.loc[use_bus_mask]
+
+    est_speed_numeric = pd.to_numeric(result["est_speed"], errors="coerce")
+    invalid_mask = est_speed_numeric.isna() | est_speed_numeric.lt(MIN_VALID_SPEED_KMH)
+    result.loc[invalid_mask, "est_speed"] = global_default
+
+    matched_segments = int(pd.to_numeric(result["est_speed"], errors="coerce").notna().sum())
 
     return result, matched_segments
 
@@ -959,16 +1051,19 @@ def attach_estimated_speed_to_snapshot(
         raise ValueError("completed_snapshot_df must contain 'segment_id'")
 
     result = completed_snapshot_df.copy()
-    prediction_df = prediction_df.copy()
+    result["segment_id_norm"] = _normalize_segment_id_series(result["segment_id"])
 
-    prediction_df["segment_id"] = prediction_df["segment_id"].astype(str).str.strip()
-    result["segment_id"] = result["segment_id"].astype(str).str.strip()
+    pred_df = prediction_df.copy()
+    pred_df["segment_id_norm"] = _normalize_segment_id_series(pred_df["segment_id"])
 
-    return result.merge(
-        prediction_df.rename(columns={"est_speed": "estimated_speed"}),
-        on="segment_id",
+    merged = result.merge(
+        pred_df[["segment_id_norm", "est_speed"]].rename(columns={"est_speed": "estimated_speed"}),
+        on="segment_id_norm",
         how="left",
     )
+
+    merged = merged.drop(columns=["segment_id_norm"])
+    return merged
 
 
 def build_estimation_artifacts(
