@@ -556,18 +556,39 @@ def prepare_brussels_page_payload(
             max_gap_below_google=3.0,
             random_seed=42,
         )
-        # --- end
 
         if not enriched_snapshot_df.empty:
             enriched_snapshot_df = attach_google_results_to_snapshot_df(
                 snapshot_df=enriched_snapshot_df,
                 google_results_df=google_results_df,
             )
+        
+            enriched_snapshot_df, _ = apply_temporary_estimation_correction(
+                enriched_snapshot_df,
+                est_col="est_speed",
+                google_col="google_speed",
+                threshold=3.5,
+                max_gap_below_google=3.0,
+                random_seed=42,
+            )
+        
         enriched_snapshot_df = attach_segment_metadata(
             enriched_snapshot_df,
             segment_metadata_df,
             source_id_col="segment_id",
         )
+        # --- end
+
+        #if not enriched_snapshot_df.empty:
+        #    enriched_snapshot_df = attach_google_results_to_snapshot_df(
+        #        snapshot_df=enriched_snapshot_df,
+        #        google_results_df=google_results_df,
+        #    )
+        #enriched_snapshot_df = attach_segment_metadata(
+        #    enriched_snapshot_df,
+        #    segment_metadata_df,
+        #    source_id_col="segment_id",
+        #)
     else:
         gdf["bus_speed"] = pd.NA
         gdf["est_speed"] = pd.NA
