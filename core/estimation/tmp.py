@@ -163,12 +163,7 @@ def resolve_checkpoint_path() -> Path:
 def _to_numpy_or_none(value: Any) -> np.ndarray | None:
     if value is None:
         return None
-    arr = np.asarray(value, dtype=np.float32)
-    return arr
-
-
-def _normalize_1d(values: np.ndarray, mean: np.ndarray, std: np.ndarray) -> np.ndarray:
-    return (values - mean) / std
+    return np.asarray(value, dtype=np.float32)
 
 
 def _inverse_transform_1d(values: np.ndarray, mean: np.ndarray, std: np.ndarray) -> np.ndarray:
@@ -190,9 +185,7 @@ def load_checkpoint(path: Path) -> tuple[dict[str, Any], str]:
     raise TypeError(f"Unsupported checkpoint type: {type(checkpoint)!r}")
 
 
-def infer_model_config(
-    checkpoint: dict[str, Any],
-) -> dict[str, Any]:
+def infer_model_config(checkpoint: dict[str, Any]) -> dict[str, Any]:
     state_dict = checkpoint["model_state_dict"]
 
     conv1_weight = state_dict.get("backbone.0.weight")
@@ -215,8 +208,7 @@ def infer_model_config(
 
     delta_scale = float(model_kwargs.get("delta_scale", 5.0))
     topk = int(model_kwargs.get("topk", 4))
-    hidden_from_kwargs = int(model_kwargs.get("hidden", hidden))
-    hidden = hidden_from_kwargs
+    hidden = int(model_kwargs.get("hidden", hidden))
 
     return {
         "window_size": window_size,
@@ -241,9 +233,7 @@ def infer_model_config(
     }
 
 
-def build_model_from_checkpoint(
-    checkpoint: dict[str, Any],
-) -> tuple[nn.Module, dict[str, Any]]:
+def build_model_from_checkpoint(checkpoint: dict[str, Any]) -> tuple[nn.Module, dict[str, Any]]:
     config = infer_model_config(checkpoint=checkpoint)
 
     model = RefinerCNN(
@@ -564,29 +554,20 @@ def build_historical_window_plan_from_checkpoint(
     use_weekly_lag: bool,
 ) -> list[tuple[str, pd.Timestamp | None]]:
     """
-    Build a window that exactly matches training semantics.
-
-    Training order:
+    Training semantics:
       - recent intra-day frames: oldest -> newest among previous same-day buckets
       - daily lag: t - 1 day
       - weekly lags: t - 7d, 14d, 21d
-
-    For recent frames, if crossing the day boundary would happen, keep None
-    so later padding is applied instead of leaking previous-day context.
     """
     bucket_time = floor_to_15_minutes(snapshot_time)
     plan: list[tuple[str, pd.Timestamp | None]] = []
 
     day_start = bucket_time.normalize()
 
-    recent_offsets = list(range(recent_steps, 0, -1))
-    for step_back in recent_offsets:
+    for step_back in range(recent_steps, 0, -1):
         candidate = bucket_time - pd.Timedelta(minutes=PARQUET_BUCKET_MINUTES * step_back)
         label = f"recent_t_minus_{PARQUET_BUCKET_MINUTES * step_back}m"
-        if candidate >= day_start:
-            plan.append((label, candidate))
-        else:
-            plan.append((label, None))
+        plan.append((label, candidate if candidate >= day_start else None))
 
     if use_daily_lag:
         plan.append(("daily_t_minus_1d", bucket_time - pd.Timedelta(days=1)))
@@ -621,11 +602,13 @@ def prepare_snapshot_series_aligned_to_checkpoint(
     snapshot_series = (
         working_df.drop_duplicates(subset=["segment_id"], keep="last")
         .set_index("segment_id")["final_speed_kmh"]
-        .sort_index()
         .astype("float32")
     )
 
-    checkpoint_index = pd.Index([str(x).strip() for x in checkpoint_street_names], name="segment_id")
+    checkpoint_index = pd.Index(
+        [str(x).strip() for x in checkpoint_street_names],
+        name="segment_id",
+    )
     aligned = snapshot_series.reindex(checkpoint_index)
 
     meta = {
@@ -673,11 +656,7 @@ def build_historical_feature_matrix(
         else:
             aligned_series = pd.Series(index=ordered_segment_ids, dtype="float32")
 
-        historical_df[label] = pd.to_numeric(
-            aligned_series,
-            errors="coerce",
-        ).astype("float32")
-
+        historical_df[label] = pd.to_numeric(aligned_series, errors="coerce").astype("float32")
         non_null_counts[label] = int(historical_df[label].notna().sum())
 
     diagnostics = {
@@ -703,7 +682,7 @@ def fill_missing_historical_values(
       1) historical observed value
       2) current snapshot speed
       3) checkpoint x_scaler_mean per street
-      4) global median of available fallback values
+      4) global median fallback
     """
     result = historical_df.copy()
 
@@ -717,14 +696,13 @@ def fill_missing_historical_values(
     else:
         checkpoint_mean_series = pd.Series(index=result.index, dtype="float32")
 
-    global_fallback = pd.concat(
+    global_candidates = pd.concat(
         [
-            fallback_series.dropna().astype("float32"),
-            checkpoint_mean_series.dropna().astype("float32"),
+            fallback_series[np.isfinite(fallback_series) & (fallback_series > 0)].astype("float32"),
+            checkpoint_mean_series[np.isfinite(checkpoint_mean_series) & (checkpoint_mean_series > 0)].astype("float32"),
         ]
     )
-
-    global_value = float(global_fallback.median()) if not global_fallback.empty else 20.0
+    global_value = float(global_candidates.median()) if not global_candidates.empty else 20.0
 
     for column in result.columns:
         col = result[column]
@@ -777,8 +755,7 @@ def inverse_transform_predictions_if_needed(
 def build_model_input_window_from_historical(historical_df: pd.DataFrame) -> torch.Tensor:
     values = historical_df.to_numpy(dtype="float32")  # [S, W]
     values = values.T  # [W, S]
-    tensor = torch.tensor(values, dtype=torch.float32).unsqueeze(0)  # [1, W, S]
-    return tensor
+    return torch.tensor(values, dtype=torch.float32).unsqueeze(0)  # [1, W, S]
 
 
 @st.cache_data(show_spinner=False, ttl=90)
@@ -795,9 +772,7 @@ def run_tmp_model_inference(
 
     snapshot_time = get_snapshot_timestamp(completed_snapshot_df)
     diagnostics["snapshot_found"] = snapshot_time is not None
-    diagnostics["snapshot_time"] = (
-        snapshot_time.isoformat() if snapshot_time is not None else None
-    )
+    diagnostics["snapshot_time"] = snapshot_time.isoformat() if snapshot_time is not None else None
 
     if snapshot_time is None:
         diagnostics["error_message"] = "Snapshot time could not be extracted."
@@ -867,8 +842,8 @@ def run_tmp_model_inference(
             use_daily_lag=bool(config["use_daily_lag"]),
             use_weekly_lag=bool(config["use_weekly_lag"]),
         )
-        fallback_df = pd.DataFrame(index=ordered_segment_ids)
 
+        fallback_df = pd.DataFrame(index=ordered_segment_ids)
         for label, _ in plan:
             fallback_df[label] = base_snapshot_series
 
@@ -909,52 +884,35 @@ def run_tmp_model_inference(
     prediction_df = pd.DataFrame(
         {
             "segment_id": ordered_segment_ids,
-            "est_speed": y_hat,
+            "est_speed": pd.to_numeric(y_hat, errors="coerce"),
         }
     )
 
-    
-    prediction_df["est_speed"] = pd.to_numeric(prediction_df["est_speed"], errors="coerce")
-    
-    street_fallback = base_snapshot_series.reindex(
-        prediction_df["segment_id"]
-    ).to_numpy(dtype=np.float32)
-    
+    street_fallback = base_snapshot_series.reindex(prediction_df["segment_id"]).to_numpy(dtype=np.float32)
+
     y_mean = config.get("y_scaler_mean")
     if y_mean is not None:
-        mean_fallback = np.asarray(y_mean, dtype=np.float32)
+        second_fallback = np.asarray(y_mean, dtype=np.float32)
     else:
         x_mean = config.get("x_scaler_mean")
-        mean_fallback = np.asarray(x_mean, dtype=np.float32) if x_mean is not None else None
-    
+        if x_mean is not None:
+            second_fallback = np.asarray(x_mean, dtype=np.float32)
+        else:
+            finite_fallback = street_fallback[np.isfinite(street_fallback) & (street_fallback > 0)]
+            global_default = float(np.nanmedian(finite_fallback)) if finite_fallback.size > 0 else 20.0
+            second_fallback = np.full(len(prediction_df), global_default, dtype=np.float32)
+
     values = np.array(prediction_df["est_speed"], dtype=np.float32, copy=True)
-    
+
     invalid_mask = ~np.isfinite(values) | (values <= 0)
-    
-    if mean_fallback is not None:
-        second_fallback = np.array(mean_fallback, dtype=np.float32, copy=False)
-    else:
-        finite_fallback = street_fallback[np.isfinite(street_fallback) & (street_fallback > 0)]
-        global_default = float(np.nanmedian(finite_fallback)) if finite_fallback.size > 0 else 20.0
-        second_fallback = np.full(values.shape, global_default, dtype=np.float32)
-    
+
     valid_street_fallback_mask = np.isfinite(street_fallback) & (street_fallback > 0)
     use_street_mask = invalid_mask & valid_street_fallback_mask
     values[use_street_mask] = street_fallback[use_street_mask]
-    
-    invalid_mask = ~np.isfinite(values) | (values <= 0)
-    values[invalid_mask] = second_fallback[invalid_mask]
-    
-    invalid_mask = ~np.isfinite(values) | (values <= 0)
-    values[invalid_mask] = second_fallback[invalid_mask]
-    
-    prediction_df["est_speed"] = values
 
-    values[invalid_mask] = street_fallback[invalid_mask]
-    
     invalid_mask = ~np.isfinite(values) | (values <= 0)
     values[invalid_mask] = second_fallback[invalid_mask]
-    
+
     prediction_df["est_speed"] = values
 
     return prediction_df, diagnostics
@@ -1001,19 +959,16 @@ def attach_estimated_speed_to_snapshot(
         raise ValueError("completed_snapshot_df must contain 'segment_id'")
 
     result = completed_snapshot_df.copy()
-
     prediction_df = prediction_df.copy()
-    prediction_df["segment_id"] = prediction_df["segment_id"].astype(str).str.strip()
 
+    prediction_df["segment_id"] = prediction_df["segment_id"].astype(str).str.strip()
     result["segment_id"] = result["segment_id"].astype(str).str.strip()
 
-    merged = result.merge(
+    return result.merge(
         prediction_df.rename(columns={"est_speed": "estimated_speed"}),
         on="segment_id",
         how="left",
     )
-
-    return merged
 
 
 def build_estimation_artifacts(
