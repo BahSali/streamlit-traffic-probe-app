@@ -50,6 +50,7 @@ def _prepare_results_df(results_df: pd.DataFrame) -> pd.DataFrame:
 
     return df
     
+
 def render_brussels_results_visualisation(results_df: pd.DataFrame) -> None:
     df = _prepare_results_df(results_df)
     if df.empty:
@@ -96,7 +97,6 @@ def render_summary_metrics(df: pd.DataFrame) -> None:
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Total rows", len(df))
-    #col2.metric("Bus available", int(df["bus_speed"].notna().sum()) if "bus_speed" in df.columns else 0)
     col2.metric("Bus available", len(df))
     col3.metric("Google available", int(df["google_speed"].notna().sum()) if "google_speed" in df.columns else 0)
     col4.metric(
@@ -105,6 +105,7 @@ def render_summary_metrics(df: pd.DataFrame) -> None:
     )
 
     st.caption(f"Rows with both Estimation and Google: {google_overlap}")
+
 
 def render_estimation_google_error_heatmap(df: pd.DataFrame) -> None:
     required_cols = {"est_speed", "google_speed"}
@@ -144,6 +145,7 @@ def render_estimation_google_error_heatmap(df: pd.DataFrame) -> None:
 
     st.altair_chart(chart, use_container_width=True)
     
+
 def render_estimation_vs_google_scatter(df: pd.DataFrame) -> None:
     required_cols = {"est_speed", "google_speed", "segment_id", "segment_name"}
     if not required_cols.issubset(df.columns):
