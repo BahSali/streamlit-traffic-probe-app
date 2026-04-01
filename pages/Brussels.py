@@ -1047,13 +1047,13 @@ with content_box:
             use_container_width=False,
         )
 
-    st.markdown("---")
-    st.markdown("### API")
-    if st.session_state["brussels_colorized"] and not enriched_snapshot_df.empty:
-        render_brussels_api(
-            selected_segment_names=st.session_state.get("brussels_applied_segment_names", []),
-            selected_bus_ids=st.session_state.get("brussels_applied_bus_ids", []),
-        )
+    #st.markdown("---")
+    #st.markdown("### API")
+    #if st.session_state["brussels_colorized"] and not enriched_snapshot_df.empty:
+    #    render_brussels_api(
+    #        selected_segment_names=st.session_state.get("brussels_applied_segment_names", []),
+    #        selected_bus_ids=st.session_state.get("brussels_applied_bus_ids", []),
+    #    )
     
     st.markdown("---")
     st.markdown("### Performance Analysis")
