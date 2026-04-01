@@ -552,31 +552,39 @@ def prepare_brussels_page_payload(
         # --- tmp correction
         gdf, c_estimation_diagnostics = apply_temporary_estimation_correction(
             gdf,
+            est_col="est_speed",
+            google_col="google_speed",
             threshold=3.5,
             max_gap_below_google=3.0,
             random_seed=42,
         )
-
+        
         if not enriched_snapshot_df.empty:
             enriched_snapshot_df = attach_google_results_to_snapshot_df(
                 snapshot_df=enriched_snapshot_df,
                 google_results_df=google_results_df,
             )
+
+            if "estimated_speed" not in enriched_snapshot_df.columns and "est_speed" in enriched_snapshot_df.columns:
+                enriched_snapshot_df["estimated_speed"] = enriched_snapshot_df["est_speed"]
+        
+            if "google_speed_kmh" not in enriched_snapshot_df.columns and "google_speed" in enriched_snapshot_df.columns:
+                enriched_snapshot_df["google_speed_kmh"] = enriched_snapshot_df["google_speed"]
         
             enriched_snapshot_df, _ = apply_temporary_estimation_correction(
                 enriched_snapshot_df,
-                est_col="est_speed",
+                est_col="estimated_speed",
                 google_col="google_speed_kmh",
                 threshold=3.5,
                 max_gap_below_google=3.0,
                 random_seed=42,
             )
-        
-        enriched_snapshot_df = attach_segment_metadata(
-            enriched_snapshot_df,
-            segment_metadata_df,
-            source_id_col="segment_id",
-        )
+
+            enriched_snapshot_df = attach_segment_metadata(
+                    enriched_snapshot_df,
+                    segment_metadata_df,
+                    source_id_col="segment_id",
+                )
         # --- end
 
         #if not enriched_snapshot_df.empty:
