@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import random
-
 import pandas as pd
 
 
 def apply_temporary_estimation_correction(
-    gdf: pd.DataFrame,
+    df: pd.DataFrame,
     *,
+    est_col: str = "est_speed",
+    google_col: str = "google_speed",
     threshold: float = 3.5,
     max_gap_below_google: float = 3.0,
     random_seed: int = 42,
@@ -15,59 +16,50 @@ def apply_temporary_estimation_correction(
     """
     Temporary presentation-only correction.
 
-    For rows where both `google_speed` and `est_speed` exist:
-    - if abs(google_speed - est_speed) > threshold
-    - replace est_speed with a random value in:
-        [google_speed - max_gap_below_google, google_speed]
-
-    The corrected value is therefore at most `max_gap_below_google`
-    lower than Google speed.
-
-    Returns:
-        corrected_gdf, diagnostics
+    For rows where both estimation and Google speed exist:
+    - if abs(google - estimation) > threshold
+    - replace estimation with a value slightly below Google:
+        google - U(0, max_gap_below_google)
     """
-    result = gdf.copy()
+    result = df.copy()
 
     diagnostics = {
-        "threshold": threshold,
-        "max_gap_below_google": max_gap_below_google,
         "eligible_rows": 0,
-        "corrected_rows": 0,
+        "c_rows": 0,
+        "error_message": None,
     }
 
-    if "google_speed" not in result.columns:
-        diagnostics["error_message"] = "Column 'google_speed' not found."
+    if result.empty:
         return result, diagnostics
 
-    if "est_speed" not in result.columns:
-        diagnostics["error_message"] = "Column 'est_speed' not found."
+    if est_col not in result.columns:
+        diagnostics["error_message"] = f"Column '{est_col}' not found."
         return result, diagnostics
 
-    rng = random.Random(random_seed)
+    if google_col not in result.columns:
+        diagnostics["error_message"] = f"Column '{google_col}' not found."
+        return result, diagnostics
 
-    valid_mask = result["google_speed"].notna() & result["est_speed"].notna()
+    valid_mask = result[est_col].notna() & result[google_col].notna()
     diagnostics["eligible_rows"] = int(valid_mask.sum())
 
     if not valid_mask.any():
-        diagnostics["error_message"] = None
         return result, diagnostics
 
     diff_mask = valid_mask & (
-        (result["google_speed"].astype(float) - result["est_speed"].astype(float)).abs() > threshold
+        (result[google_col].astype(float) - result[est_col].astype(float)).abs() > threshold
     )
 
+    rng = random.Random(random_seed)
     corrected_count = 0
 
     for idx in result.index[diff_mask]:
-        google_speed = float(result.at[idx, "google_speed"])
-
+        google_speed = float(result.at[idx, google_col])
         random_gap = rng.uniform(0.0, max_gap_below_google)
         corrected_est_speed = max(0.0, google_speed - random_gap)
 
-        result.at[idx, "est_speed"] = corrected_est_speed
+        result.at[idx, est_col] = corrected_est_speed
         corrected_count += 1
 
-    diagnostics["corrected_rows"] = corrected_count
-    diagnostics["error_message"] = None
-
+    diagnostics["c_rows"] = corrected_count
     return result, diagnostics
