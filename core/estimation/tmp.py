@@ -27,7 +27,7 @@ REQUEST_TIMEOUT_SECONDS = 45
 # Output guardrails
 # --------------------------------------------------
 MIN_VALID_SPEED_KMH = 5.0
-MAX_VALID_SPEED_KMH = 54.0
+MAX_VALID_SPEED_KMH = 51.0
 DEFAULT_GLOBAL_SPEED_KMH = 20.0
 
 
