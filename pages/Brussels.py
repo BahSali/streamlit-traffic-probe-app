@@ -1027,6 +1027,12 @@ with content_box:
     with col_legend:
         st.markdown(legend_html(), unsafe_allow_html=True)
 
+    st.markdown("---")
+    st.markdown("### Performance Analysis")
+    if st.session_state["brussels_colorized"] and not enriched_snapshot_df.empty:
+        render_brussels_results_visualisation(enriched_snapshot_df)
+        
+    st.markdown("---")   
     st.markdown("### Results")
     priority_cols = ["timestamp", "segment_id", "segment_name", "bus_lines"]
     existing_priority_cols = [c for c in priority_cols if c in enriched_snapshot_df.columns]
@@ -1054,11 +1060,6 @@ with content_box:
     #        selected_segment_names=st.session_state.get("brussels_applied_segment_names", []),
     #        selected_bus_ids=st.session_state.get("brussels_applied_bus_ids", []),
     #    )
-    
-    st.markdown("---")
-    st.markdown("### Performance Analysis")
-    if st.session_state["brussels_colorized"] and not enriched_snapshot_df.empty:
-        render_brussels_results_visualisation(enriched_snapshot_df)
     
     st.markdown("---")
     st.markdown("### Overview")
