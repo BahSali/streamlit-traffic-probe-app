@@ -71,22 +71,18 @@ def render_summary_metrics(df: pd.DataFrame) -> None:
                 overlap_df["est_speed"] - overlap_df["google_speed"]
             ).abs().mean()
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total Rows", len(df))
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total Segments", len(df))
     col2.metric(
-        "Rows with Bus Speed",
-        int(df["bus_speed"].notna().sum()) if "bus_speed" in df.columns else 0,
-    )
-    col3.metric(
-        "Rows with Google Speed",
+        "Segments with Google Speed",
         int(df["google_speed"].notna().sum()) if "google_speed" in df.columns else 0,
     )
-    col4.metric(
+    col3.metric(
         "Mean Absolute Error",
         f"{mean_abs_error:.2f} km/h" if mean_abs_error is not None else "N/A",
     )
 
-    st.caption(f"Rows with both Estimated and Google speed values: {google_overlap}")
+    st.caption(f"Segments with both Estimated and Google speed values: {google_overlap}")
 
 
 def render_estimation_google_abs_error_by_street_chart(df: pd.DataFrame) -> None:
