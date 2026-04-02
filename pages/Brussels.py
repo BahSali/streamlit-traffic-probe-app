@@ -556,7 +556,7 @@ def prepare_brussels_page_payload(
             gdf,
             est_col="est_speed",
             google_col="google_speed",
-            threshold=thr,
+            threshold=ther,
             max_gap_below_google=max_gap,
             random_seed=42,
         )
@@ -577,7 +577,7 @@ def prepare_brussels_page_payload(
                 enriched_snapshot_df,
                 est_col="estimated_speed",
                 google_col="google_speed_kmh",
-                threshold=thr,
+                threshold=ther,
                 max_gap_below_google=max_gap,
                 random_seed=42,
             )
