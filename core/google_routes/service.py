@@ -19,7 +19,7 @@ MAX_GAP_METERS = 15.0
 MAX_TURN_DEG = 30.0
 MAX_GROUP_SIZE = 17
 
-USAGE_FILE_PATH = Path("یعب")
+USAGE_FILE_PATH = Path("یعب/")
 
 SESSION = requests.Session()
 
