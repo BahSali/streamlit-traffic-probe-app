@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -22,6 +24,10 @@ PARQUET_COMPONENT = "stib_vehicle_distance_parquetize"
 PARQUET_MARGIN_MINUTES = 30
 PARQUET_BUCKET_MINUTES = 15
 REQUEST_TIMEOUT_SECONDS = 45
+MAX_PARQUET_DOWNLOAD_WORKERS = 6
+INFERENCE_RESULT_CACHE_SIZE = 8
+
+_INFERENCE_RESULT_CACHE: OrderedDict[str, tuple[pd.DataFrame, dict[str, Any]]] = OrderedDict()
 
 # --------------------------------------------------
 # Output guardrails
@@ -374,24 +380,96 @@ def auth_request(url: str, token: str) -> dict[str, Any]:
     return response.json()
 
 
+def _download_single_parquet(url: str) -> pa.Table:
+    response = requests.get(url, timeout=REQUEST_TIMEOUT_SECONDS)
+    response.raise_for_status()
+    return pq.read_table(BytesIO(response.content))
+
+
+def _compact_bucket_times(bucket_times: list[pd.Timestamp]) -> tuple[pd.Timestamp, ...]:
+    normalized = [pd.Timestamp(value).floor(f"{PARQUET_BUCKET_MINUTES}min") for value in bucket_times]
+    return tuple(sorted(set(normalized)))
+
+
+def _build_inference_cache_key(
+    completed_snapshot_df: pd.DataFrame,
+    checkpoint_segment_ids: list[str],
+) -> str:
+    snapshot_time = get_snapshot_timestamp(completed_snapshot_df)
+    snapshot_time_key = snapshot_time.isoformat() if snapshot_time is not None else "none"
+
+    working_df = completed_snapshot_df.copy()
+
+    if "segment_id" in working_df.columns:
+        working_df["segment_id"] = _normalize_segment_id_series(working_df["segment_id"])
+    else:
+        working_df["segment_id"] = ""
+
+    for col in ["final_speed_kmh", "live_speed_kmh", "interpolated_speed_kmh"]:
+        if col not in working_df.columns:
+            working_df[col] = np.nan
+        working_df[col] = pd.to_numeric(working_df[col], errors="coerce").round(4)
+
+    hashed_df = (
+        working_df[["segment_id", "final_speed_kmh", "live_speed_kmh", "interpolated_speed_kmh"]]
+        .drop_duplicates(subset=["segment_id"], keep="last")
+        .sort_values("segment_id")
+        .reset_index(drop=True)
+    )
+
+    payload_hash = int(pd.util.hash_pandas_object(hashed_df, index=False).sum())
+    checkpoint_hash = hash(tuple(checkpoint_segment_ids))
+
+    return f"{snapshot_time_key}|{len(hashed_df)}|{payload_hash}|{checkpoint_hash}"
+
+
+def _get_cached_inference_result(cache_key: str) -> tuple[pd.DataFrame, dict[str, Any]] | None:
+    cached = _INFERENCE_RESULT_CACHE.get(cache_key)
+    if cached is None:
+        return None
+
+    _INFERENCE_RESULT_CACHE.move_to_end(cache_key)
+    prediction_df, diagnostics = cached
+    return prediction_df.copy(), dict(diagnostics)
+
+
+def _store_cached_inference_result(
+    cache_key: str,
+    prediction_df: pd.DataFrame,
+    diagnostics: dict[str, Any],
+) -> None:
+    _INFERENCE_RESULT_CACHE[cache_key] = (prediction_df.copy(), dict(diagnostics))
+    _INFERENCE_RESULT_CACHE.move_to_end(cache_key)
+
+    while len(_INFERENCE_RESULT_CACHE) > INFERENCE_RESULT_CACHE_SIZE:
+        _INFERENCE_RESULT_CACHE.popitem(last=False)
+
+
 def download_and_concatenate_parquets(url_list: list[str]) -> pa.Table:
-    arrow_table = None
-
-    for url in url_list:
-        response = requests.get(url, timeout=REQUEST_TIMEOUT_SECONDS)
-        response.raise_for_status()
-        data = BytesIO(response.content)
-        table = pq.read_table(data)
-
-        if arrow_table is None:
-            arrow_table = table
-        else:
-            arrow_table = pa.concat_tables([arrow_table, table])
-
-    if arrow_table is None:
+    if not url_list:
         raise ValueError("No parquet files were returned by the API.")
 
-    return arrow_table
+    max_workers = max(1, min(MAX_PARQUET_DOWNLOAD_WORKERS, len(url_list)))
+    tables: list[pa.Table | None] = [None] * len(url_list)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_idx = {
+            executor.submit(_download_single_parquet, url): idx
+            for idx, url in enumerate(url_list)
+        }
+
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            tables[idx] = future.result()
+
+    ordered_tables = [table for table in tables if table is not None]
+    if not ordered_tables:
+        raise ValueError("No parquet files were downloaded successfully.")
+
+    if len(ordered_tables) == 1:
+        return ordered_tables[0]
+
+    return pa.concat_tables(ordered_tables, promote_options="default")
 
 
 @st.cache_data(show_spinner=False, ttl=300)
@@ -536,7 +614,7 @@ def fetch_segment_snapshots_for_multiple_buckets(
     gpkg_path: str,
     bucket_time_isos: tuple[str, ...],
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
-    bucket_times = [pd.Timestamp(value) for value in bucket_time_isos]
+    bucket_times = _compact_bucket_times([pd.Timestamp(value) for value in bucket_time_isos])
 
     if not bucket_times:
         return pd.DataFrame(), {
@@ -545,9 +623,9 @@ def fetch_segment_snapshots_for_multiple_buckets(
         }
 
     lookup_df = build_segment_lookup_from_gpkg(gpkg_path)
-    grouped_windows = group_bucket_times_for_compact_fetch(bucket_times)
+    grouped_windows = group_bucket_times_for_compact_fetch(list(bucket_times))
 
-    merged_frames: list[pd.DataFrame] = []
+    result_frames: list[pd.DataFrame] = []
     fetch_windows = [
         {
             "start": window_start.isoformat(),
@@ -556,6 +634,12 @@ def fetch_segment_snapshots_for_multiple_buckets(
         }
         for window_start, window_end, bucket_group in grouped_windows
     ]
+
+    lookup_df = lookup_df.copy()
+    lookup_df["pointId"] = pd.to_numeric(lookup_df["pointId"], errors="coerce").astype("Int64")
+    lookup_df["lineId"] = lookup_df["lineId"].astype(str).str.strip()
+    lookup_df = lookup_df.dropna(subset=["pointId"])
+    lookup_df = lookup_df.drop_duplicates(subset=["segment_id", "pointId", "lineId"])
 
     for window_start, window_end, bucket_group in grouped_windows:
         raw_speed_df = fetch_raw_bucket_speeds(
@@ -567,37 +651,61 @@ def fetch_segment_snapshots_for_multiple_buckets(
         if raw_speed_df.empty:
             continue
 
-        filtered_df = raw_speed_df.loc[
-            raw_speed_df["local_time"].isin(bucket_group)
-        ].copy()
+        bucket_filter_df = pd.DataFrame(
+            {"local_time": pd.to_datetime(list(bucket_group), errors="coerce")}
+        ).dropna()
 
-        if filtered_df.empty:
+        if bucket_filter_df.empty:
             continue
 
-        joined_df = pd.merge(
-            filtered_df,
-            lookup_df,
-            on=["pointId", "lineId"],
-            how="inner",
-        )
+        con = duckdb.connect()
+        try:
+            con.register("raw_speed_df", raw_speed_df)
+            con.register("lookup_df", lookup_df)
+            con.register("bucket_filter_df", bucket_filter_df)
+
+            joined_df = con.execute(
+                """
+                SELECT
+                    l.segment_id,
+                    r.local_time,
+                    AVG(r.speed) AS historical_speed_kmh
+                FROM raw_speed_df AS r
+                INNER JOIN bucket_filter_df AS b
+                    ON r.local_time = b.local_time
+                INNER JOIN lookup_df AS l
+                    ON r.pointId = l.pointId
+                   AND r.lineId = l.lineId
+                WHERE r.speed IS NOT NULL
+                GROUP BY l.segment_id, r.local_time
+                """
+            ).df()
+        finally:
+            con.close()
 
         if joined_df.empty:
             continue
 
-        merged_frames.append(joined_df)
+        joined_df["local_time"] = pd.to_datetime(joined_df["local_time"], errors="coerce")
+        joined_df["segment_id"] = joined_df["segment_id"].astype(str).str.strip()
+        joined_df["historical_speed_kmh"] = pd.to_numeric(
+            joined_df["historical_speed_kmh"],
+            errors="coerce",
+        ).astype("float32")
 
-    if not merged_frames:
+        result_frames.append(joined_df)
+
+    if not result_frames:
         return pd.DataFrame(index=pd.Index([], name="segment_id")), {
             "historical_fetch_group_count": len(grouped_windows),
             "historical_fetch_windows": fetch_windows,
         }
 
-    merged_df = pd.concat(merged_frames, ignore_index=True)
-
     segment_df = (
-        merged_df.groupby(["segment_id", "local_time"], as_index=False)["speed"]
+        pd.concat(result_frames, ignore_index=True)
+        .dropna(subset=["segment_id", "local_time"])
+        .groupby(["segment_id", "local_time"], as_index=False)["historical_speed_kmh"]
         .mean()
-        .rename(columns={"speed": "historical_speed_kmh"})
     )
 
     pivot_df = segment_df.pivot(
@@ -882,6 +990,22 @@ def run_tmp_model_inference(
 
     checkpoint_segment_ids = [_normalize_segment_id_value(x) for x in config["street_names"]]
 
+    cache_key = _build_inference_cache_key(
+        completed_snapshot_df=completed_snapshot_df,
+        checkpoint_segment_ids=checkpoint_segment_ids,
+    )
+    cached_result = _get_cached_inference_result(cache_key)
+    if cached_result is not None:
+        prediction_df, cached_diagnostics = cached_result
+        cached_diagnostics["model_path"] = str(checkpoint_path)
+        cached_diagnostics["checkpoint_type"] = checkpoint_type
+        cached_diagnostics["model_loaded"] = True
+        cached_diagnostics["snapshot_found"] = diagnostics["snapshot_found"]
+        cached_diagnostics["snapshot_time"] = diagnostics["snapshot_time"]
+        cached_diagnostics["snapshot_bucket_time"] = diagnostics["snapshot_bucket_time"]
+        cached_diagnostics["raw_snapshot_rows"] = diagnostics["raw_snapshot_rows"]
+        return prediction_df, cached_diagnostics
+
     base_snapshot_series, align_meta = prepare_snapshot_series_aligned_to_checkpoint(
         completed_snapshot_df=completed_snapshot_df,
         checkpoint_street_names=checkpoint_segment_ids,
@@ -1035,6 +1159,12 @@ def run_tmp_model_inference(
 
     values = np.clip(values, MIN_VALID_SPEED_KMH, MAX_VALID_SPEED_KMH).astype(np.float32)
     prediction_df["est_speed"] = values
+
+    _store_cached_inference_result(
+        cache_key=cache_key,
+        prediction_df=prediction_df,
+        diagnostics=diagnostics,
+    )
 
     return prediction_df, diagnostics
 
