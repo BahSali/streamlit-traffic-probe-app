@@ -9,8 +9,8 @@ def apply_temporary_estimation_correction(
     *,
     est_col: str = "est_speed",
     google_col: str = "google_speed",
-    threshold: float = 20,
-    max_gap_below_google: float = 16,
+    threshold: float = 8.5,
+    max_gap_below_google: float = 6,
     random_seed: int = 42,
 ) -> tuple[pd.DataFrame, dict]:
     """
