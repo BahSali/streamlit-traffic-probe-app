@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import json
 import math
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
+import gspread
 import pandas as pd
 import requests
 import streamlit as st
@@ -18,8 +17,6 @@ GOOGLE_ROUTES_MONTHLY_LIMIT = 5000
 MAX_GAP_METERS = 15.0
 MAX_TURN_DEG = 30.0
 MAX_GROUP_SIZE = 17
-
-USAGE_FILE_PATH = Path("data/google_routes_usage.json")
 
 SESSION = requests.Session()
 
@@ -42,72 +39,87 @@ def get_current_month_key() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m")
 
 
-def ensure_usage_file_exists() -> None:
-    USAGE_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+@st.cache_resource
+def get_google_sheet():
+    gc = gspread.service_account_from_dict(dict(st.secrets["gcp_service_account"]))
+    spreadsheet = gc.open(st.secrets["sheets"]["spreadsheet_name"])
+    worksheet = spreadsheet.worksheet(st.secrets["sheets"]["worksheet_name"])
+    return worksheet
 
-    if not USAGE_FILE_PATH.exists():
-        USAGE_FILE_PATH.write_text(
-            json.dumps(
-                {
-                    "month_key": get_current_month_key(),
-                    "request_count": 0,
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
+
+def ensure_current_month_row_exists() -> None:
+    """
+    Ensure a row exists for the current month in the Google Sheet.
+
+    Expected header:
+    month_key | request_count
+    """
+    ws = get_google_sheet()
+    month_key = get_current_month_key()
+
+    records = ws.get_all_records()
+    for row in records:
+        if str(row.get("month_key", "")).strip() == month_key:
+            return
+
+    ws.append_row([month_key, 0])
 
 
 def read_usage_state() -> dict[str, Any]:
     """
-    Read the persistent monthly Google request counter.
-
-    If the saved month is not the current month, reset automatically.
+    Read the persistent monthly Google request counter from Google Sheets.
     """
-    ensure_usage_file_exists()
+    ws = get_google_sheet()
+    month_key = get_current_month_key()
 
-    try:
-        state = json.loads(USAGE_FILE_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        state = {
-            "month_key": get_current_month_key(),
-            "request_count": 0,
-        }
+    ensure_current_month_row_exists()
 
-    current_month_key = get_current_month_key()
-
-    if state.get("month_key") != current_month_key:
-        state = {
-            "month_key": current_month_key,
-            "request_count": 0,
-        }
-        write_usage_state(state)
-
-    request_count = int(state.get("request_count", 0))
+    records = ws.get_all_records()
+    for row in records:
+        if str(row.get("month_key", "")).strip() == month_key:
+            return {
+                "month_key": month_key,
+                "request_count": int(row.get("request_count", 0)),
+            }
 
     return {
-        "month_key": current_month_key,
-        "request_count": request_count,
+        "month_key": month_key,
+        "request_count": 0,
     }
-
-
-def write_usage_state(state: dict[str, Any]) -> None:
-    ensure_usage_file_exists()
-    USAGE_FILE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
 def get_monthly_google_request_count() -> int:
     return int(read_usage_state()["request_count"])
 
 
+def set_monthly_google_request_count(value: int) -> dict[str, Any]:
+    """
+    Set the monthly Google request counter manually in Google Sheets.
+    """
+    ws = get_google_sheet()
+    month_key = get_current_month_key()
+
+    ensure_current_month_row_exists()
+
+    cell = ws.find(month_key)
+    row_index = cell.row
+    value = max(0, int(value))
+
+    ws.update(f"B{row_index}", [[value]])
+
+    return {
+        "month_key": month_key,
+        "request_count": value,
+    }
+
+
 def increment_monthly_google_request_count(increment: int) -> dict[str, Any]:
     """
     Increase the monthly request counter by the number of requests actually sent.
     """
-    state = read_usage_state()
-    state["request_count"] = int(state.get("request_count", 0)) + int(increment)
-    write_usage_state(state)
-    return state
+    current = get_monthly_google_request_count()
+    new_value = current + int(increment)
+    return set_monthly_google_request_count(new_value)
 
 
 def can_send_google_requests(
