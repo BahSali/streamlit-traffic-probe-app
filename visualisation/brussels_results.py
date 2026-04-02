@@ -133,15 +133,14 @@ def render_estimation_google_abs_error_by_street_chart(df: pd.DataFrame) -> None
                 ),
                 alt.Tooltip(
                     "mean_estimated_speed:Q",
-                    title="Mean Estimated Speed (km/h)",
+                    title="Estimated Speed (km/h)",
                     format=".2f",
                 ),
                 alt.Tooltip(
                     "mean_google_speed:Q",
-                    title="Mean Google Speed (km/h)",
+                    title="Google Speed (km/h)",
                     format=".2f",
                 ),
-                alt.Tooltip("sample_count:Q", title="Number of Records"),
             ],
         )
         .properties(
