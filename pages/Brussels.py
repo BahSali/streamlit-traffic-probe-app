@@ -550,12 +550,14 @@ def prepare_brussels_page_payload(
         )
 
         # --- tmp correction
+        ther = 20.5
+        max_gap = 15.5
         gdf, c_estimation_diagnostics = apply_temporary_estimation_correction(
             gdf,
             est_col="est_speed",
             google_col="google_speed",
-            threshold=20.5,
-            max_gap_below_google=15.0,
+            threshold=thr,
+            max_gap_below_google=max_gap,
             random_seed=42,
         )
         
@@ -575,8 +577,8 @@ def prepare_brussels_page_payload(
                 enriched_snapshot_df,
                 est_col="estimated_speed",
                 google_col="google_speed_kmh",
-                threshold=3.5,
-                max_gap_below_google=3.0,
+                threshold=thr,
+                max_gap_below_google=max_gap,
                 random_seed=42,
             )
 
