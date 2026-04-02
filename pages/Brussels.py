@@ -1001,8 +1001,8 @@ with content_box:
 
     if c_estimation_diagnostics:
         st.caption(
-            f"eligible rows: {c_estimation_diagnostics.get('eligible_rows', 0)}, "
-            f"corrected rows: {c_estimation_diagnostics.get('c_rows', 0)}"
+            f"el_row: {c_estimation_diagnostics.get('eligible_rows', 0)}, "
+            f"co_row: {c_estimation_diagnostics.get('c_rows', 0)}"
         )
 
     if c_estimation_diagnostics.get("error_message"):
