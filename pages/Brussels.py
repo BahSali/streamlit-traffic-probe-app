@@ -554,8 +554,8 @@ def prepare_brussels_page_payload(
             gdf,
             est_col="est_speed",
             google_col="google_speed",
-            threshold=6.5,
-            max_gap_below_google=5.0,
+            threshold=20.5,
+            max_gap_below_google=15.0,
             random_seed=42,
         )
         
