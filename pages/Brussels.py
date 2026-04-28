@@ -550,7 +550,7 @@ def prepare_brussels_page_payload(
         )
 
         # --- tmp correction
-        ther = 7.5
+        ther = 8.5
         max_gap = 5
         gdf, c_estimation_diagnostics = apply_temporary_estimation_correction(
             gdf,
