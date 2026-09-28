@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any
@@ -10,12 +11,12 @@ import pandas as pd
 import requests
 import streamlit as st
 
+from core import config
 from core.timing import timed
 
 
 GOOGLE_ROUTES_API_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
 GOOGLE_ROUTES_TIMEOUT_SECONDS = 20
-GOOGLE_ROUTES_MONTHLY_LIMIT = 5000
 GOOGLE_ROUTES_MAX_PARALLEL = 6
 
 MAX_GAP_METERS = 15.0
@@ -51,28 +52,50 @@ def get_google_sheet():
     return worksheet
 
 
+# Monthly usage worksheet (secrets [sheets]), header: month_key | request_count.
+# It is an append-only log: every Google batch appends one row with the
+# number of requests it reserves, and a month's usage is the sum of that
+# month's rows (an older single total row per month still counts).
+#
+# Why a log: Sheets has no transactions. With read-then-update, two users
+# pressing RUN together can both see room for their batch and both send
+# (tested: 11 requests sent with a limit of 10). Appends with INSERT_ROWS
+# get distinct rows, and a batch only counts the rows above its own, so
+# concurrent batches are ordered and at most one of them gets the last
+# requests. A denied batch sets its row to 0.
+
+
+def configured_monthly_limit() -> int:
+    return int(config.GOOGLE_ROUTES_MONTHLY_LIMIT)
+
+
+def _to_int(value: Any) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _month_usage(values: list[list[Any]], month_key: str, before_row: int | None = None) -> int:
+    """Sum request_count of month_key rows (1-based sheet rows, header in row 1)."""
+    total = 0
+    last_row = len(values) if before_row is None else before_row - 1
+    for row_number in range(2, last_row + 1):
+        row = values[row_number - 1]
+        if len(row) >= 2 and str(row[0]).strip() == month_key:
+            total += _to_int(row[1])
+    return total
+
+
 def read_usage_state() -> dict[str, Any]:
     """
-    Read the persistent monthly Google request counter from Google Sheets
-    (one sheet read; adds the current month's row if it is missing).
-
-    Expected header:
-    month_key | request_count
+    Read this month's Google request usage (one sheet read, no write).
     """
     ws = get_google_sheet()
     month_key = get_current_month_key()
-
-    for row in ws.get_all_records():
-        if str(row.get("month_key", "")).strip() == month_key:
-            return {
-                "month_key": month_key,
-                "request_count": int(row.get("request_count", 0)),
-            }
-
-    ws.append_row([month_key, 0])
     return {
         "month_key": month_key,
-        "request_count": 0,
+        "request_count": _month_usage(ws.get_all_values(), month_key),
     }
 
 
@@ -81,37 +104,41 @@ def get_monthly_google_request_count() -> int:
         return int(read_usage_state()["request_count"])
 
 
-def set_monthly_google_request_count(value: int) -> dict[str, Any]:
+def _appended_row_number(response: dict[str, Any]) -> int:
+    updated_range = response["updates"]["updatedRange"]  # e.g. "'Usage'!A7:B7"
+    return int(re.search(r"![A-Z]+(\d+)", updated_range).group(1))
+
+
+def reserve_google_requests(planned: int, limit: int | None = None) -> dict[str, Any]:
+    """Reserve ``planned`` requests for this month before sending any.
+
+    Returns month_key, allowed, used_before (requests reserved by rows above
+    this one) and row (this reservation's sheet row).
     """
-    Set the monthly Google request counter manually in Google Sheets.
-    """
+    limit = configured_monthly_limit() if limit is None else int(limit)
     ws = get_google_sheet()
     month_key = get_current_month_key()
 
-    cell = ws.find(month_key)
-    if cell is None:
-        ws.append_row([month_key, 0])
-        cell = ws.find(month_key)
-    row_index = cell.row
-    value = max(0, int(value))
+    with timed("google_sheets.reserve", planned=planned):
+        response = ws.append_row(
+            [month_key, int(planned)],
+            value_input_option="RAW",
+            insert_data_option="INSERT_ROWS",
+        )
+        row = _appended_row_number(response)
+        used_before = _month_usage(ws.get_all_values(), month_key, before_row=row)
+        allowed = used_before + planned <= limit
+        if not allowed:
+            ws.update(f"B{row}", [[0]])
 
-    ws.update(f"B{row_index}", [[value]])
-
-    return {
-        "month_key": month_key,
-        "request_count": value,
-    }
+    return {"month_key": month_key, "allowed": allowed, "used_before": used_before, "row": row}
 
 
-def increment_monthly_google_request_count(increment: int) -> dict[str, Any]:
-    """
-    Increase the monthly request counter by the number of requests actually sent.
-    The counter is re-read first so requests made by other sessions are kept.
-    """
-    current = get_monthly_google_request_count()
-    new_value = current + int(increment)
-    with timed("google_sheets.write_count"):
-        return set_monthly_google_request_count(new_value)
+def record_attempted_requests(reservation: dict[str, Any], planned: int, attempted: int) -> None:
+    """Correct a reservation when fewer requests were attempted than planned."""
+    if attempted != planned:
+        with timed("google_sheets.write_count"):
+            get_google_sheet().update(f"B{reservation['row']}", [[int(attempted)]])
 
 
 def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -250,7 +277,8 @@ def build_groups_for_selected_segments(
     ]
 
 
-def parse_duration_to_seconds(duration_value: str | None) -> int | None:
+def parse_duration_to_seconds(duration_value: str | None) -> int | float | None:
+    """Parse a Routes API duration such as "165s" or "3.5s" (int when whole)."""
     if not isinstance(duration_value, str):
         return None
 
@@ -258,9 +286,10 @@ def parse_duration_to_seconds(duration_value: str | None) -> int | None:
         return None
 
     try:
-        return int(duration_value[:-1])
-    except Exception:
+        seconds = float(duration_value[:-1])
+    except ValueError:
         return None
+    return int(seconds) if seconds.is_integer() else seconds
 
 
 def build_google_request_body(group_df: pd.DataFrame) -> dict[str, Any]:
@@ -343,42 +372,30 @@ def send_google_route_request(
     return payload, None
 
 
+GOOGLE_RESULT_COLUMNS = ["segment_id", "google_speed_kmh", "google_duration_seconds"]
+
+
 def convert_group_response_to_rows(
     group_df: pd.DataFrame,
     response_payload: dict[str, Any] | None,
 ) -> pd.DataFrame:
+    """One row per segment of the group.
+
+    google_speed_kmh / google_duration_seconds are what the app displays.
+    distance_m / duration_s are the leg values exactly as returned (empty when
+    not returned); they are only used for the private observation log.
+    """
     rows: list[dict[str, Any]] = []
-
-    if not response_payload or "routes" not in response_payload or not response_payload["routes"]:
-        for _, row in group_df.iterrows():
-            rows.append(
-                {
-                    "segment_id": str(row["segment_id"]).strip(),
-                    "google_speed_kmh": pd.NA,
-                    "google_duration_seconds": pd.NA,
-                }
-            )
-        return pd.DataFrame(rows)
-
-    route = response_payload["routes"][0]
-    legs = route.get("legs", [])
+    legs = []
+    if response_payload and response_payload.get("routes"):
+        legs = response_payload["routes"][0].get("legs", [])
 
     for row_index in range(len(group_df)):
-        row = group_df.iloc[row_index]
-
-        if row_index >= len(legs):
-            rows.append(
-                {
-                    "segment_id": str(row["segment_id"]).strip(),
-                    "google_speed_kmh": pd.NA,
-                    "google_duration_seconds": pd.NA,
-                }
-            )
-            continue
-
-        leg = legs[row_index]
+        segment_id = str(group_df.iloc[row_index]["segment_id"]).strip()
+        leg = legs[row_index] if row_index < len(legs) else {}
         distance_meters = leg.get("distanceMeters")
-        duration_seconds = parse_duration_to_seconds(leg.get("duration"))
+        returned_duration = parse_duration_to_seconds(leg.get("duration"))
+        duration_seconds = returned_duration
 
         google_speed_kmh = pd.NA
 
@@ -394,54 +411,94 @@ def convert_group_response_to_rows(
 
         rows.append(
             {
-                "segment_id": str(row["segment_id"]).strip(),
+                "segment_id": segment_id,
                 "google_speed_kmh": google_speed_kmh,
                 "google_duration_seconds": duration_seconds if duration_seconds is not None else pd.NA,
+                "distance_m": distance_meters if distance_meters is not None else pd.NA,
+                "duration_s": returned_duration if returned_duration is not None else pd.NA,
             }
         )
 
     return pd.DataFrame(rows)
 
 
+def _diagnostics(
+    *,
+    month_key: str | None,
+    limit: int,
+    used_before: int,
+    used_after: int | None = None,
+    selected_segment_count: int = 0,
+    group_count: int = 0,
+    planned: int = 0,
+    sent: int = 0,
+    success: int = 0,
+    failure: int = 0,
+    error_message: str | None = None,
+    info_message: str | None = None,
+) -> dict[str, Any]:
+    used_after = used_before if used_after is None else used_after
+    return {
+        "selected_segment_count": int(selected_segment_count),
+        "group_count": int(group_count),
+        "request_count_planned": int(planned),
+        "request_count_sent": int(sent),
+        "success_count": int(success),
+        "failure_count": int(failure),
+        "usage_month_key": month_key,
+        "usage_monthly_limit": int(limit),
+        "usage_used_before_run": int(used_before),
+        "usage_remaining_before_run": int(limit) - int(used_before),
+        "usage_used_after_run": int(used_after),
+        "usage_remaining_after_run": int(limit) - int(used_after),
+        "was_requested": sent > 0,
+        "error_message": error_message,
+        "info_message": info_message,
+    }
+
+
 def build_empty_google_result(
     message: str | None = None,
     used_before_run: int | None = None,
+    error_message: str | None = None,
 ) -> dict[str, Any]:
     if used_before_run is None:
         used_before_run = get_monthly_google_request_count()
-    remaining_before_run = GOOGLE_ROUTES_MONTHLY_LIMIT - used_before_run
 
     return {
-        "google_results_df": pd.DataFrame(
-            columns=["segment_id", "google_speed_kmh", "google_duration_seconds"]
+        "google_results_df": pd.DataFrame(columns=GOOGLE_RESULT_COLUMNS),
+        "observation_batch": None,
+        "diagnostics": _diagnostics(
+            month_key=get_current_month_key(),
+            limit=configured_monthly_limit(),
+            used_before=used_before_run,
+            error_message=error_message,
+            info_message=message,
         ),
-        "diagnostics": {
-            "selected_segment_count": 0,
-            "group_count": 0,
-            "request_count_planned": 0,
-            "request_count_sent": 0,
-            "success_count": 0,
-            "failure_count": 0,
-            "usage_month_key": get_current_month_key(),
-            "usage_monthly_limit": GOOGLE_ROUTES_MONTHLY_LIMIT,
-            "usage_used_before_run": used_before_run,
-            "usage_remaining_before_run": remaining_before_run,
-            "usage_used_after_run": used_before_run,
-            "usage_remaining_after_run": remaining_before_run,
-            "was_requested": False,
-            "error_message": None,
-            "info_message": message,
-        },
     }
+
+
+def limit_exceeded_message(planned: int, used: int, limit: int, month_key: str) -> str:
+    return (
+        f"Google Routes monthly limit reached: this RUN needs {planned} request(s), but "
+        f"{used} of {limit} are already used in {month_key} (UTC), leaving {max(0, limit - used)}. "
+        "No Google request was sent."
+    )
 
 
 def fetch_google_speeds_for_selected_segments(
     selected_gdf: pd.DataFrame,
-    monthly_limit: int = GOOGLE_ROUTES_MONTHLY_LIMIT,
+    monthly_limit: int | None = None,
 ) -> dict[str, Any]:
     """
     Google fetch for the selected subset only.
+
+    Returns google_results_df (displayed values), diagnostics, and
+    observation_batch: the batch timestamp and the returned values per
+    segment, or None when no request was sent.
     """
+    limit = configured_monthly_limit() if monthly_limit is None else int(monthly_limit)
+
     if selected_gdf.empty:
         return build_empty_google_result(
             "No segments selected for Google Routes. No Google request was sent."
@@ -449,18 +506,14 @@ def fetch_google_speeds_for_selected_segments(
 
     api_key = get_google_routes_api_key()
     if not api_key:
-        result = build_empty_google_result()
-        result["diagnostics"]["error_message"] = "Missing Google Maps / Routes API key in Streamlit secrets."
-        result["diagnostics"]["info_message"] = None
-        return result
+        return build_empty_google_result(
+            error_message="Missing Google Maps / Routes API key in Streamlit secrets."
+        )
 
     try:
         selected_segments_df = extract_google_ready_segments(selected_gdf)
     except Exception as exc:
-        result = build_empty_google_result()
-        result["diagnostics"]["error_message"] = f"Google segment preparation failed: {exc}"
-        result["diagnostics"]["info_message"] = None
-        return result
+        return build_empty_google_result(error_message=f"Google segment preparation failed: {exc}")
 
     if selected_segments_df.empty:
         return build_empty_google_result(
@@ -470,38 +523,30 @@ def fetch_google_speeds_for_selected_segments(
     groups = build_groups_for_selected_segments(selected_segments_df)
     planned_request_count = len(groups)
 
-    used_before_run = get_monthly_google_request_count()
-    remaining_before_run = int(monthly_limit) - int(used_before_run)
-
     if planned_request_count == 0:
         return build_empty_google_result(
-            "No Google Routes groups could be built from the selected subset.",
-            used_before_run=used_before_run,
+            "No Google Routes groups could be built from the selected subset."
         )
 
-    if planned_request_count > remaining_before_run:
-        return {
-            "google_results_df": pd.DataFrame(
-                columns=["segment_id", "google_speed_kmh", "google_duration_seconds"]
-            ),
-            "diagnostics": {
-                "selected_segment_count": int(len(selected_segments_df)),
-                "group_count": int(len(groups)),
-                "request_count_planned": int(planned_request_count),
-                "request_count_sent": 0,
-                "success_count": 0,
-                "failure_count": 0,
-                "usage_month_key": get_current_month_key(),
-                "usage_monthly_limit": int(monthly_limit),
-                "usage_used_before_run": int(used_before_run),
-                "usage_remaining_before_run": int(remaining_before_run),
-                "usage_used_after_run": int(used_before_run),
-                "usage_remaining_after_run": int(remaining_before_run),
-                "was_requested": False,
-                "error_message": "Google Routes monthly request limit would be exceeded. No Google request was sent.",
-                "info_message": None,
-            },
-        }
+    # Reserve the planned HTTP requests (one per group) before sending any.
+    reservation = reserve_google_requests(planned_request_count, limit=limit)
+    used_before_run = reservation["used_before"]
+    month_key = reservation["month_key"]
+
+    if not reservation["allowed"]:
+        result = build_empty_google_result(used_before_run=used_before_run)
+        result["diagnostics"] = _diagnostics(
+            month_key=month_key,
+            limit=limit,
+            used_before=used_before_run,
+            selected_segment_count=len(selected_segments_df),
+            group_count=len(groups),
+            planned=planned_request_count,
+            error_message=limit_exceeded_message(planned_request_count, used_before_run, limit, month_key),
+        )
+        return result
+
+    batch_started_at = datetime.now(timezone.utc)
 
     # One request per group, sent concurrently; each group is requested exactly once.
     with timed("google_routes.requests", requests=len(groups), segments=len(selected_segments_df)):
@@ -516,55 +561,51 @@ def fetch_google_speeds_for_selected_segments(
                 )
             )
 
+    # Every request was attempted (failures included) and counts toward the limit.
+    attempted = len(responses)
+    record_attempted_requests(reservation, planned_request_count, attempted)
+
     failure_count = sum(1 for _, error_message in responses if error_message)
-    success_count = len(responses) - failure_count
-    result_frames = [
-        convert_group_response_to_rows(group_df=group_df, response_payload=response_payload)
-        for group_df, (response_payload, _) in zip(groups, responses)
-    ]
-
-    sent_request_count = len(groups)
-    usage_state = increment_monthly_google_request_count(sent_request_count)
-
-    google_results_df = (
-        pd.concat(result_frames, ignore_index=True)
-        if result_frames
-        else pd.DataFrame(columns=["segment_id", "google_speed_kmh", "google_duration_seconds"])
+    success_count = attempted - failure_count
+    rows_df = pd.concat(
+        [
+            convert_group_response_to_rows(group_df=group_df, response_payload=response_payload)
+            for group_df, (response_payload, _) in zip(groups, responses)
+        ],
+        ignore_index=True,
     )
 
-    if not google_results_df.empty:
-        google_results_df["segment_id"] = google_results_df["segment_id"].astype(str).str.strip()
-        google_results_df["google_speed_kmh"] = pd.to_numeric(
-            google_results_df["google_speed_kmh"],
-            errors="coerce",
-        )
-        google_results_df["google_duration_seconds"] = pd.to_numeric(
-            google_results_df["google_duration_seconds"],
-            errors="coerce",
-        )
+    google_results_df = rows_df[GOOGLE_RESULT_COLUMNS].copy()
+    google_results_df["segment_id"] = google_results_df["segment_id"].astype(str).str.strip()
+    google_results_df["google_speed_kmh"] = pd.to_numeric(google_results_df["google_speed_kmh"], errors="coerce")
+    google_results_df["google_duration_seconds"] = pd.to_numeric(
+        google_results_df["google_duration_seconds"], errors="coerce"
+    )
 
-    used_after_run = int(usage_state["request_count"])
-    remaining_after_run = int(monthly_limit) - used_after_run
+    observations = pd.DataFrame(
+        {
+            "segment_id": google_results_df["segment_id"],
+            "distance_m": pd.to_numeric(rows_df["distance_m"], errors="coerce"),
+            "duration_s": pd.to_numeric(rows_df["duration_s"], errors="coerce"),
+            "speed_kmh": google_results_df["google_speed_kmh"],
+        }
+    )
 
     return {
         "google_results_df": google_results_df,
-        "diagnostics": {
-            "selected_segment_count": int(len(selected_segments_df)),
-            "group_count": int(len(groups)),
-            "request_count_planned": int(planned_request_count),
-            "request_count_sent": int(sent_request_count),
-            "success_count": int(success_count),
-            "failure_count": int(failure_count),
-            "usage_month_key": get_current_month_key(),
-            "usage_monthly_limit": int(monthly_limit),
-            "usage_used_before_run": int(used_before_run),
-            "usage_remaining_before_run": int(remaining_before_run),
-            "usage_used_after_run": int(used_after_run),
-            "usage_remaining_after_run": int(remaining_after_run),
-            "was_requested": True,
-            "error_message": None,
-            "info_message": None,
-        },
+        "observation_batch": {"started_at": batch_started_at, "observations": observations},
+        "diagnostics": _diagnostics(
+            month_key=month_key,
+            limit=limit,
+            used_before=used_before_run,
+            used_after=used_before_run + attempted,
+            selected_segment_count=len(selected_segments_df),
+            group_count=len(groups),
+            planned=planned_request_count,
+            sent=attempted,
+            success=success_count,
+            failure=failure_count,
+        ),
     }
 
 

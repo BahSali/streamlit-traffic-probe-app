@@ -22,6 +22,7 @@ from cities.brussels.controls import brussels_left_controls
 from cities.brussels.map_data import get_filter_options
 from cities.brussels.session import (
     fetch_google_speeds,
+    flush_observation_batches,
     init_session_state,
     on_reset_clicked,
     on_run_clicked,
@@ -31,7 +32,7 @@ from cities.brussels.session import (
 from cities.brussels.speed_layers import build_idle_payload, build_run_payload
 from cities.brussels.synced_maps import build_three_map_html
 from core.config import APPLY_DEMO_SPEED_CORRECTION
-from core.google_routes.service import GOOGLE_ROUTES_MONTHLY_LIMIT
+from core.google_routes.service import configured_monthly_limit
 from core.layout import page_header, setup_page
 from core.map_render import show_map_with_legend
 from core.timing import timed
@@ -101,7 +102,7 @@ def render_diagnostics(payload: dict, google_diagnostics: dict) -> None:
             f"failure: {google_diagnostics.get('failure_count', 0)}, "
             f"monthly used after run: {google_diagnostics.get('usage_used_after_run', 0)}, "
             f"monthly remaining: {google_diagnostics.get('usage_remaining_after_run', 0)}, "
-            f"monthly limit: {google_diagnostics.get('usage_monthly_limit', GOOGLE_ROUTES_MONTHLY_LIMIT)}"
+            f"monthly limit: {google_diagnostics.get('usage_monthly_limit', configured_monthly_limit())}"
         )
 
     if estimation_diagnostics.get("error_message"):
@@ -160,7 +161,7 @@ def render_content(slots: dict, payload: dict) -> None:
     google_used = google_diagnostics.get("usage_used_after_run", 0)
     google_remaining = google_diagnostics.get(
         "usage_remaining_after_run",
-        GOOGLE_ROUTES_MONTHLY_LIMIT - google_used,
+        configured_monthly_limit() - google_used,
     )
     with slots["overview"].container():
         col1, col2, col3, col4 = st.columns(4)
@@ -192,6 +193,8 @@ def run_update(status) -> dict:
         stage("No segments selected: skipping Google speeds")
     with timed("brussels.google_fetch_step"):
         fetch_google_speeds()
+    with timed("google_observations.store"):
+        flush_observation_batches()
 
     payload = build_run_payload(
         google_results_df=st.session_state["brussels_google_results_df"],
@@ -205,6 +208,8 @@ def run_update(status) -> dict:
 settings_box, content_box = setup_page("Brussels")
 
 init_session_state()
+# Retry any observation batch whose write failed or was interrupted.
+flush_observation_batches()
 
 segment_options, bus_id_options = get_filter_options()
 

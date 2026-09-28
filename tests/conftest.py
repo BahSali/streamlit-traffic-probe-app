@@ -2,8 +2,8 @@
 import json
 import re
 import sys
+import threading
 from pathlib import Path
-from unittest import mock
 
 import pandas as pd
 import pytest
@@ -13,24 +13,49 @@ sys.path.insert(0, str(REPO_ROOT))
 
 
 class FakeSheet:
-    """In-memory stand-in for the Google Sheet holding the monthly request count."""
+    """In-memory stand-in for a gspread worksheet (values as a list of rows).
 
-    def __init__(self):
-        self.rows = []
+    append_row / append_rows behave like INSERT_ROWS appends and report the
+    written range the way the Sheets API does.
+    """
 
-    def get_all_records(self):
-        return [dict(r) for r in self.rows]
+    def __init__(self, header=("month_key", "request_count")):
+        self.values = [list(header)] if header else []
+        self.lock = threading.Lock()
+        self.calls = []
 
-    def append_row(self, row):
-        self.rows.append({"month_key": row[0], "request_count": row[1]})
+    def _append(self, rows):
+        with self.lock:
+            first = len(self.values) + 1
+            self.values.extend([list(r) for r in rows])
+            last = len(self.values)
+        return {"updates": {"updatedRange": f"'Sheet1'!A{first}:F{last}"}}
 
-    def find(self, key):
-        for i, r in enumerate(self.rows):
-            if r["month_key"] == key:
-                return mock.Mock(row=i + 2)
+    def append_row(self, row, **kwargs):
+        self.calls.append(("append_row", kwargs))
+        return self._append([row])
+
+    def append_rows(self, rows, **kwargs):
+        self.calls.append(("append_rows", kwargs))
+        return self._append(rows)
+
+    # Like the Sheets API, reads return every cell as a string.
+    def get_all_values(self):
+        with self.lock:
+            return [[str(v) for v in r] for r in self.values]
+
+    def row_values(self, row):
+        return [str(v) for v in self.values[row - 1]] if len(self.values) >= row else []
+
+    def col_values(self, col):
+        return [str(r[col - 1]) for r in self.values if len(r) >= col]
 
     def update(self, cell, values):
-        self.rows[int(cell[1:]) - 2]["request_count"] = values[0][0]
+        with self.lock:
+            self.values[int(cell[1:]) - 1][1] = values[0][0]
+
+    def month_total(self, month_key):
+        return sum(int(r[1] or 0) for r in self.values[1:] if r[0] == month_key)
 
 
 def fake_google_request(api_key, body):
@@ -82,6 +107,9 @@ def offline(monkeypatch):
 
     record = {"html": [], "downloads": [], "google_requests": 0, "stib_fetches": 0, "model_runs": 0}
     sheet = FakeSheet()
+    observation_sheet = FakeSheet(header=None)
+    record["usage_sheet"] = sheet
+    record["observation_sheet"] = observation_sheet
 
     def counted(key, fn):
         def wrapper(*args, **kwargs):
@@ -99,6 +127,11 @@ def offline(monkeypatch):
     monkeypatch.setattr(brussels_model, "run_tmp_model_inference", counted("model_runs", fake_model_inference))
     # Cached results from earlier tests would hide the calls counted above.
     st.cache_data.clear()
+    import cities.brussels.session as session
+    from core.google_routes import observations
+
+    observations.ensure_header(observation_sheet)
+    monkeypatch.setattr(session, "_observation_worksheet", lambda: observation_sheet)
     monkeypatch.setenv("MOBILITY_TWIN_TOKEN", "fake")
     return record
 

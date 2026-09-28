@@ -21,6 +21,7 @@ secrets settings. `MOBILITY_TWIN_TOKEN` can also be an environment variable.
 | `MOBILITY_TWIN_TOKEN` | Brussels live/historical STIB data; Ixelles-Etterbeek pipeline runs |
 | `GOOGLE_MAPS_API_KEY` (or `GOOGLE_ROUTES_API_KEY`) | Brussels Google Routes speeds (paid API) |
 | `gcp_service_account`, `sheets.spreadsheet_id`, `sheets.worksheet_name` | Brussels monthly Google request counter (Google Sheet) |
+| `google_observations.spreadsheet_id`, `google_observations.worksheet_name` | Private log of Google Routes observations (see below); optional |
 
 ## Project layout
 
@@ -42,6 +43,7 @@ cities/                        City-specific data loading, estimation and contro
     model.py                   Estimation model inference
     synced_maps.py/.html       The three synced Leaflet maps
     charts.py                  "Performance Analysis" charts
+scripts/                       export_google_observations.py (private CSV exports)
 core/                          Shared by all cities
   config.py                    Settings (demo correction flag) and file locations
   layout.py                    Page registry, setup_page(), left panel, page_header()
@@ -50,6 +52,7 @@ core/                          Shared by all cities
   data_sources.py              Cached file loaders, MobilityTwin token and loaders
   stib_*.py                    MobilityTwin STIB live/historical data
   google_routes/service.py     Google Routes requests and monthly usage limit
+  google_routes/observations.py  Private observation log and CSV exports
   estimation/correction.py     Demo speed correction
   pipelines.py                 Old import path for cities/ixelles_etterbeek/pipeline.py
 data/                          Networks (CSV / GeoPackage) and committed results
@@ -114,13 +117,87 @@ timing mobilitytwin.historical_request 0.607s caller=model window_start=... file
 timing brussels.run_update 9.946s
 ```
 
-Main stages: `google_sheets.read_count` / `write_count`,
+Main stages: `google_sheets.read_count` / `reserve` / `write_count`, `google_observations.store`,
 `google_routes.requests`, `mobilitytwin.live_request`,
 `mobilitytwin.historical_request` (per window, with file and row counts),
 `brussels.live_bus_speeds`, `brussels.import_model`, `model.history_features`,
 `model.inference`, `brussels.geojson_serialize`, `brussels.maps_html`,
 `brussels.charts`, and `brussels.run_update` (the whole RUN). Set the
 environment variable `ESTIMATOR_TIMING_LOG=0` to turn them off.
+
+## Google Routes: monthly limit and private observation log
+
+### Monthly request limit
+
+**Setting:** `GOOGLE_ROUTES_MONTHLY_LIMIT` in [`core/config.py`](core/config.py)
+(default 5000; set e.g. 10 to test). Overview ("Google used" / "Google left")
+and the diagnostics line use this value.
+
+Usage is kept in the existing worksheet (`[sheets]`, header
+`month_key | request_count`, month in UTC as `YYYY-MM`). It is an append-only
+log: each RUN that needs Google adds one row reserving its planned HTTP
+requests (one per group of adjacent segments, not one per segment), and a
+month's usage is the **sum** of that month's rows. An existing single total
+row per month keeps counting. To correct the usage, add a row with the
+difference.
+
+- A RUN is checked before anything is sent: if its planned requests do not
+  fit in what is left, nothing is sent, its row is set to 0, and the page
+  shows the usage, the limit and the month.
+- Every attempted request counts, including failed ones. Google results
+  reused from the same selection within 90 s send and count nothing.
+- Two users pressing RUN at the same moment: each reservation is appended as
+  its own row (`INSERT_ROWS`) and only the rows above it count, so both
+  cannot take the last requests. This relies on Google Sheets applying
+  appends one after the other. If the sheet write fails after a reservation,
+  that reservation still counts, so the error is on the safe side.
+
+### Private observation log
+
+Google data may not be redistributed. The route-leg values are therefore
+stored only in a **separate private spreadsheet** and never shown, logged or
+committed. Setup:
+
+1. Create a new Google spreadsheet with a worksheet named e.g.
+   `observations`. Share it only with your account and the service
+   account's e-mail (Editor).
+2. Add to the app's secrets:
+
+   ```toml
+   [google_observations]
+   spreadsheet_id = "<the new spreadsheet's id>"
+   worksheet_name = "observations"
+   ```
+
+   Without this section the app works as before and stores nothing (a
+   warning is logged).
+
+Each RUN that actually sends Google requests appends one batch in a single
+call: `batch_id | batch_timestamp_utc | segment_id | distance_m | duration_s |
+speed_kmh`. The first row of a batch has an empty `segment_id` and marks the
+batch; then one row per segment for which Google returned a value.
+
+- `batch_timestamp_utc`: when the batch's requests were sent, ISO 8601 in
+  UTC with milliseconds, e.g. `2026-01-15T07:07:31.123Z`.
+- `distance_m` and `duration_s`: the route leg's `distanceMeters` and
+  `duration` as returned. `speed_kmh`: the speed the app derives and displays
+  (a 0 s leg shorter than 20 m is treated as 1 s). Missing values stay empty.
+- Reused Google results and RUNs blocked by the limit add nothing.
+- Writes are retried; a batch already present (same `batch_id`) is never
+  written again and rows are never updated. A write that failed is retried
+  on the next rerun of the page.
+
+**Exports** (only with the credentials, from your own machine):
+
+```bash
+python scripts/export_google_observations.py --secrets .streamlit/secrets.toml --out exports
+```
+
+This writes `google_distance_m.csv`, `google_duration_s.csv` and
+`google_speed_kmh.csv`. Each has `timestamp_utc` first, then one column per
+Brussels segment id (all 1,366, ascending, same order in the three files),
+and one row per stored batch in time order. Cells without a returned value
+are empty. `exports/` is git-ignored; never commit these files.
 
 ## Adding a city
 

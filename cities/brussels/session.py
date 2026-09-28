@@ -7,20 +7,27 @@ maps are only rebuilt, and data only fetched, when RUN is pressed.
 
 Google Routes is paid per request: it is called once per RUN, and not at all
 when the same selection is RUN again within GOOGLE_RESULT_REUSE_SECONDS.
+Each batch actually sent is queued for the private observation log
+(core/google_routes/observations.py) and written from the queue, so a failed
+or interrupted write is retried on the next rerun without duplicates.
 """
 from __future__ import annotations
 
+import logging
 import time
 
 import pandas as pd
 import streamlit as st
 
 from cities.brussels.map_data import get_selected_mask, load_brussels_map
+from core.google_routes import observations
 from core.google_routes.service import (
-    GOOGLE_ROUTES_MONTHLY_LIMIT,
+    configured_monthly_limit,
     fetch_google_speeds_for_selected_segments,
     get_monthly_google_request_count,
 )
+
+logger = logging.getLogger("estimator.observations")
 
 # Same as the cache lifetime of the live STIB data, so a quick repeated RUN
 # shows all three maps from the same moment.
@@ -33,6 +40,7 @@ def empty_google_results_df() -> pd.DataFrame:
 
 def idle_google_diagnostics(used_count: int, error_message: str | None = None) -> dict:
     """Google diagnostics when no request was sent in this run."""
+    limit = configured_monthly_limit()
     return {
         "selected_segment_count": 0,
         "group_count": 0,
@@ -41,11 +49,11 @@ def idle_google_diagnostics(used_count: int, error_message: str | None = None) -
         "success_count": 0,
         "failure_count": 0,
         "usage_month_key": None,
-        "usage_monthly_limit": GOOGLE_ROUTES_MONTHLY_LIMIT,
+        "usage_monthly_limit": limit,
         "usage_used_before_run": used_count,
-        "usage_remaining_before_run": GOOGLE_ROUTES_MONTHLY_LIMIT - used_count,
+        "usage_remaining_before_run": limit - used_count,
         "usage_used_after_run": used_count,
-        "usage_remaining_after_run": GOOGLE_ROUTES_MONTHLY_LIMIT - used_count,
+        "usage_remaining_after_run": limit - used_count,
         "was_requested": False,
         "error_message": error_message,
         "info_message": None,
@@ -63,6 +71,8 @@ def init_session_state() -> None:
         "brussels_payload": None,
         # {"selection": ..., "fetched_at": epoch seconds} of the last real Google fetch.
         "brussels_google_fetch": None,
+        # Observation batches not yet stored in the private log.
+        "brussels_pending_observation_batches": [],
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -149,10 +159,12 @@ def fetch_google_speeds() -> None:
 
         selected_google_gdf = gdf.loc[selected_mask].copy()
 
-        google_result = fetch_google_speeds_for_selected_segments(
-            selected_gdf=selected_google_gdf,
-            monthly_limit=GOOGLE_ROUTES_MONTHLY_LIMIT,
-        )
+        google_result = fetch_google_speeds_for_selected_segments(selected_gdf=selected_google_gdf)
+        if google_result.get("observation_batch"):
+            batch = google_result["observation_batch"]
+            st.session_state["brussels_pending_observation_batches"].append(
+                observations.new_batch(batch["started_at"], batch["observations"])
+            )
 
         st.session_state["brussels_google_results_df"] = google_result["google_results_df"]
         st.session_state["brussels_google_diagnostics"] = google_result["diagnostics"]
@@ -168,3 +180,30 @@ def fetch_google_speeds() -> None:
             used_before_run,
             error_message=f"Google Routes execution failed: {exc}",
         )
+
+
+@st.cache_resource(show_spinner=False)
+def _observation_worksheet():
+    return observations.get_observation_worksheet()
+
+
+def flush_observation_batches() -> None:
+    """Store queued observation batches in the private log (idempotent)."""
+    pending = st.session_state.get("brussels_pending_observation_batches") or []
+    if not pending:
+        return
+    try:
+        worksheet = _observation_worksheet()
+    except Exception as exc:
+        logger.warning("observation worksheet unavailable: %s", type(exc).__name__)
+        return
+    if worksheet is None:
+        logger.warning(
+            "[google_observations] is not configured; %d observation batch(es) not stored",
+            len(pending),
+        )
+        st.session_state["brussels_pending_observation_batches"] = []
+        return
+    st.session_state["brussels_pending_observation_batches"] = [
+        batch for batch in pending if not observations.persist_batch(worksheet, batch)
+    ]

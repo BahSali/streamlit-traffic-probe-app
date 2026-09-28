@@ -14,6 +14,15 @@ from pathlib import Path
 APPLY_DEMO_SPEED_CORRECTION = True
 
 # ---------------------------------------------------------------------------
+# Google Routes monthly request limit (Brussels page)
+# ---------------------------------------------------------------------------
+# Maximum Google Routes HTTP requests per calendar month (UTC), counted in the
+# existing usage worksheet (secrets: [sheets]). A RUN whose planned requests
+# do not fit in what is left sends none. Shown as "Google left" in Overview.
+# Set e.g. 10 temporarily to test the limit.
+GOOGLE_ROUTES_MONTHLY_LIMIT = 5000
+
+# ---------------------------------------------------------------------------
 # File locations (absolute, so the app works from any working directory)
 # ---------------------------------------------------------------------------
 REPO_ROOT = Path(__file__).resolve().parent.parent
