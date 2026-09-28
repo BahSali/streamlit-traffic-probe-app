@@ -197,8 +197,11 @@ committed. Setup:
 
 Each RUN that actually sends Google requests appends one batch in a single
 call: `batch_id | batch_timestamp_utc | segment_id | distance_m | duration_s |
-speed_kmh`. The first row of a batch has an empty `segment_id` and marks the
-batch; then one row per segment for which Google returned a value.
+speed_kmh`: one row per segment for which Google returned a value. A batch
+where every request failed is written as a single row with an empty
+`segment_id`, so it still appears (empty) in the exports. Batches saved
+before this format change start with an extra row with an empty
+`segment_id`; those rows are kept as they are and read the same way.
 
 - `batch_timestamp_utc`: when the batch's requests were sent, ISO 8601 in
   UTC with milliseconds, e.g. `2026-01-15T07:07:31.123Z`.

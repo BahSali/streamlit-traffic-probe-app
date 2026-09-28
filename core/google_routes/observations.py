@@ -12,9 +12,13 @@ Worksheet (row 1 is the header)::
 
 - One batch = the Google requests sent by one RUN. Reused (cached) Google
   results and RUNs stopped by the monthly limit send nothing and add nothing.
-- A batch is appended in one API call: a marker row (empty segment_id) plus
-  one row per segment for which Google returned a value. It is written
-  completely or not at all.
+- A batch is appended in one API call: one row per segment for which Google
+  returned a value, all carrying the batch's id and timestamp. It is written
+  completely or not at all. Only a batch where Google returned nothing (every
+  request failed) is written as a single row with an empty segment_id, so it
+  still exists and still gets its (empty) row in the exports.
+- Older batches were written with an extra first row with an empty
+  segment_id. Those rows are left as they are and read the same way.
 - batch_timestamp_utc: when the batch's requests were sent, ISO 8601 in UTC
   with milliseconds, e.g. ``2026-01-15T07:07:31.123Z``.
 - distance_m and duration_s are the route-leg ``distanceMeters`` and
@@ -78,7 +82,10 @@ def _cell(value: Any) -> Any:
 
 
 def batch_rows(batch: dict[str, Any]) -> list[list[Any]]:
-    rows = [[batch["batch_id"], batch["batch_timestamp_utc"], "", "", "", ""]]
+    if batch["observations"].empty:
+        # Nothing returned: one row so the batch (and its id, for retries) exists.
+        return [[batch["batch_id"], batch["batch_timestamp_utc"], "", "", "", ""]]
+    rows = []
     for record in batch["observations"].itertuples(index=False):
         rows.append(
             [
@@ -157,11 +164,14 @@ def build_wide_exports(long_df: pd.DataFrame, segment_ids: list[str]) -> dict[st
     """Three aligned wide tables: timestamp_utc, then one column per segment id.
 
     One row per stored batch, in time order; only returned values are filled.
+    A batch is every distinct batch_id, so rows with an empty segment_id
+    (older batch markers, or batches where nothing was returned) add no
+    values and are not required.
     """
     df = long_df.fillna("").astype(str)
-    markers = df[df["segment_id"] == ""]
+    df = df[df["batch_id"] != ""]
     batches = (
-        markers.drop_duplicates("batch_id")[["batch_id", "batch_timestamp_utc"]]
+        df.drop_duplicates("batch_id")[["batch_id", "batch_timestamp_utc"]]
         .sort_values(["batch_timestamp_utc", "batch_id"], kind="stable")
         .reset_index(drop=True)
     )

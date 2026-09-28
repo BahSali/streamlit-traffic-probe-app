@@ -23,6 +23,7 @@ def test_a_run_stores_one_batch_with_returned_values(offline):
     at = run(app("pages/Brussels.py").run(), bus_ids=["12"])
     df = stored(offline["observation_sheet"])
     assert df["batch_id"].nunique() == 1
+    assert (df["segment_id"] != "").all()  # no blank marker row
     [timestamp] = df["batch_timestamp_utc"].unique()
     assert TIMESTAMP.match(timestamp)
     segments = df[df["segment_id"] != ""]
@@ -81,7 +82,7 @@ def test_retries_are_idempotent_and_never_overwrite():
     observations.persist_batch(sheet, batch, backoff_seconds=0)
     observations.persist_batch(sheet, batch, backoff_seconds=0)  # a later retry
     df = stored(sheet)
-    assert (df["batch_id"] == batch["batch_id"]).sum() == 3  # marker + 2 segments, once
+    assert (df["batch_id"] == batch["batch_id"]).sum() == 2  # the 2 segments, once
     assert calls["n"] == 1
 
 
@@ -170,3 +171,45 @@ def test_export_script_writes_three_files_for_all_segments(tmp_path, monkeypatch
     columns = headers.pop().split(",")
     assert columns[0] == "timestamp_utc" and len(columns) == 1 + 1366
     assert columns[1:] == sorted(columns[1:], key=int)
+
+
+def test_no_marker_rows_and_older_marker_rows_still_read():
+    """Rows saved in the old format (with a marker row) stay untouched and readable."""
+    sheet = FakeSheet(header=None)
+    observations.ensure_header(sheet)
+    legacy = [
+        ["a" * 32, "2026-01-15T07:07:31.000Z", "", "", "", ""],          # old marker row
+        ["a" * 32, "2026-01-15T07:07:31.000Z", "1", 100, 20, 18],
+        ["a" * 32, "2026-01-15T07:07:31.000Z", "2", 90, "", ""],
+        ["b" * 32, "2026-02-15T07:07:31.000Z", "", "", "", ""],          # old batch, nothing returned
+    ]
+    sheet.values.extend(legacy)
+    before = [list(map(str, row)) for row in sheet.values]
+
+    new = synthetic_batch([("1", 60, 12, 18.0), ("3", 120, 30, 14.4)], when="2026-07-15T06:07:31+00:00")
+    observations.persist_batch(sheet, new)
+    observations.persist_batch(sheet, new)  # retry: the batch_id check still prevents duplicates
+
+    after = sheet.get_all_values()
+    assert after[: len(before)] == before  # nothing deleted or overwritten
+    added = after[len(before):]
+    assert [row[2] for row in added] == ["1", "3"]  # no blank marker row
+    assert all(row[0] == new["batch_id"] for row in added)
+
+    exports = observations.build_wide_exports(stored(sheet), ["1", "2", "3"])
+    speed, distance = exports["speed_kmh"], exports["distance_m"]
+    assert list(speed["timestamp_utc"]) == [
+        "2026-01-15T07:07:31.000Z", "2026-02-15T07:07:31.000Z", "2026-07-15T06:07:31.000Z",
+    ]
+    assert speed.loc[0, "1"] == 18 and distance.loc[0, "2"] == 90 and pd.isna(speed.loc[0, "2"])
+    assert speed.loc[1, ["1", "2", "3"]].isna().all()  # the old empty batch keeps its row
+    assert speed.loc[2, "1"] == 18.0 and distance.loc[2, "3"] == 120 and pd.isna(distance.loc[2, "2"])
+
+
+def test_a_new_batch_with_nothing_returned_is_one_row():
+    sheet = FakeSheet(header=None)
+    observations.ensure_header(sheet)
+    empty = synthetic_batch([])
+    observations.persist_batch(sheet, empty)
+    observations.persist_batch(sheet, empty)
+    assert sheet.get_all_values()[1:] == [[empty["batch_id"], empty["batch_timestamp_utc"], "", "", "", ""]]
