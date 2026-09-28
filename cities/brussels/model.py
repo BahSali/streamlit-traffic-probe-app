@@ -237,6 +237,26 @@ def get_snapshot_timestamp(completed_snapshot_df: pd.DataFrame) -> pd.Timestamp 
     return None if pd.isna(value) else value
 
 
+def brussels_local_to_epoch_seconds(value: pd.Timestamp, *, window_end: bool) -> float:
+    """Epoch seconds (UTC) for a Brussels local time.
+
+    Snapshot and bucket times in this module are naive Brussels local times
+    (see core/stib_live.py). ``Timestamp.timestamp()`` would read a naive
+    value as UTC, shifting the window by the UTC offset (1 h in winter, 2 h in
+    summer). In the repeated hour at the end of summer time, a window start
+    takes the earlier instant and a window end the later one, so the window
+    covers both; times skipped at the start of summer time move forward.
+    """
+    local = pd.Timestamp(value)
+    if local.tzinfo is None:
+        local = local.tz_localize(
+            BRUSSELS_TIMEZONE,
+            ambiguous=not window_end,  # True = summer time = the earlier instant
+            nonexistent="shift_forward",
+        )
+    return float(local.tz_convert("UTC").timestamp())
+
+
 def floor_to_15_minutes(value: pd.Timestamp) -> pd.Timestamp:
     return pd.Timestamp(value).floor(f"{PARQUET_BUCKET_MINUTES}min")
 
@@ -514,8 +534,8 @@ def _download_window_speeds(
     window_start = pd.Timestamp(window_start_iso)
     window_end = pd.Timestamp(window_end_iso)
 
-    start_ts = float(window_start.timestamp())
-    end_ts = float(window_end.timestamp())
+    start_ts = brussels_local_to_epoch_seconds(window_start, window_end=False)
+    end_ts = brussels_local_to_epoch_seconds(window_end, window_end=True)
 
     with timed("mobilitytwin.historical_request", caller="model", window_start=window_start_iso) as log:
         response = auth_request(
