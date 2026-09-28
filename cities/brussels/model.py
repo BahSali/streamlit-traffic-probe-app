@@ -1,3 +1,5 @@
+"""Brussels speed-estimation model: loads the checkpoint in models/ and runs
+inference on the recent STIB history (MobilityTwin). Used by speed_layers.py."""
 from __future__ import annotations
 
 from collections import OrderedDict
@@ -17,6 +19,8 @@ import streamlit as st
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from core.config import MODELS_DIR
 
 
 BRUSSELS_TIMEZONE = "Europe/Brussels"
@@ -237,7 +241,7 @@ def floor_to_15_minutes(value: pd.Timestamp) -> pd.Timestamp:
 
 
 def resolve_checkpoint_path() -> Path:
-    return Path(__file__).resolve().parent / "cnn_trained model.pt"
+    return MODELS_DIR / "cnn_trained model.pt"
 
 
 def load_checkpoint(path: Path) -> tuple[dict[str, Any], str]:
