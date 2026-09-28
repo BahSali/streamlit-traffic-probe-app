@@ -1,10 +1,16 @@
 """Brussels page state: applied filters, RUN / Reset, and the Google Routes fetch.
 
-Google Routes is paid per request, so it is only called once per RUN click
-(maybe_execute_google_fetch), and results are kept in session state between
-reruns.
+RUN and Reset are button callbacks, so the page updates in the same script
+run as the click (no extra rerun). The result of each RUN is kept in session
+state and redrawn unchanged on unrelated reruns (e.g. editing a filter), so
+maps are only rebuilt, and data only fetched, when RUN is pressed.
+
+Google Routes is paid per request: it is called once per RUN, and not at all
+when the same selection is RUN again within GOOGLE_RESULT_REUSE_SECONDS.
 """
 from __future__ import annotations
+
+import time
 
 import pandas as pd
 import streamlit as st
@@ -15,6 +21,10 @@ from core.google_routes.service import (
     fetch_google_speeds_for_selected_segments,
     get_monthly_google_request_count,
 )
+
+# Same as the cache lifetime of the live STIB data, so a quick repeated RUN
+# shows all three maps from the same moment.
+GOOGLE_RESULT_REUSE_SECONDS = 90
 
 
 def empty_google_results_df() -> pd.DataFrame:
@@ -43,20 +53,20 @@ def idle_google_diagnostics(used_count: int, error_message: str | None = None) -
 
 
 def init_session_state() -> None:
-    if "brussels_colorized" not in st.session_state:
-        st.session_state["brussels_colorized"] = False
-
-    if "brussels_applied_segment_names" not in st.session_state:
-        st.session_state["brussels_applied_segment_names"] = []
-
-    if "brussels_applied_bus_ids" not in st.session_state:
-        st.session_state["brussels_applied_bus_ids"] = []
-
-    if "brussels_refresh_key" not in st.session_state:
-        st.session_state["brussels_refresh_key"] = 0
-
-    if "brussels_pending_google_fetch" not in st.session_state:
-        st.session_state["brussels_pending_google_fetch"] = False
+    defaults = {
+        "brussels_colorized": False,
+        "brussels_applied_segment_names": [],
+        "brussels_applied_bus_ids": [],
+        "brussels_refresh_key": 0,
+        "brussels_run_requested": False,
+        # Result of the last RUN (see speed_layers.build_run_payload); None before any RUN.
+        "brussels_payload": None,
+        # {"selection": ..., "fetched_at": epoch seconds} of the last real Google fetch.
+        "brussels_google_fetch": None,
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
 
     if "brussels_google_results_df" not in st.session_state:
         st.session_state["brussels_google_results_df"] = empty_google_results_df()
@@ -67,41 +77,66 @@ def init_session_state() -> None:
         )
 
 
-def handle_controls(controls: dict) -> None:
-    """Apply RUN / Reset clicks from the left panel (reruns the page)."""
-    if controls["colorize_clicked"]:
-        st.session_state["brussels_applied_segment_names"] = list(
-            controls["filters"]["segment_names"]
-        )
-        st.session_state["brussels_applied_bus_ids"] = list(
-            controls["filters"]["bus_ids"]
-        )
-        st.session_state["brussels_colorized"] = True
-        st.session_state["brussels_refresh_key"] += 1
-        st.session_state["brussels_pending_google_fetch"] = True
-        st.rerun()
-
-    if controls["reset_clicked"]:
-        st.session_state["brussels_colorized"] = False
-        st.session_state["brussels_applied_segment_names"] = []
-        st.session_state["brussels_applied_bus_ids"] = []
-        st.session_state["brussels_refresh_key"] += 1
-        st.session_state["brussels_pending_google_fetch"] = False
-        st.session_state["brussels_google_results_df"] = empty_google_results_df()
-        st.session_state["brussels_google_diagnostics"] = idle_google_diagnostics(
-            get_monthly_google_request_count()
-        )
-        st.rerun()
+def on_run_clicked() -> None:
+    """RUN callback: apply the current filters and ask the page to update."""
+    state = st.session_state
+    state["brussels_applied_segment_names"] = list(state.get("bru_seg_names", []))
+    state["brussels_applied_bus_ids"] = list(state.get("bru_bus_ids", []))
+    state["brussels_colorized"] = True
+    state["brussels_refresh_key"] += 1
+    state["brussels_run_requested"] = True
 
 
-def maybe_execute_google_fetch() -> None:
-    """
-    Execute Google Routes only when RUN has been pressed.
-    """
-    if not st.session_state.get("brussels_pending_google_fetch", False):
+def on_reset_clicked() -> None:
+    """Reset callback: back to the uncoloured network."""
+    state = st.session_state
+    used_count = state["brussels_google_diagnostics"].get("usage_used_after_run", 0)
+    state["brussels_colorized"] = False
+    state["brussels_applied_segment_names"] = []
+    state["brussels_applied_bus_ids"] = []
+    state["brussels_refresh_key"] += 1
+    state["brussels_run_requested"] = False
+    state["brussels_payload"] = None
+    state["brussels_google_fetch"] = None
+    state["brussels_google_results_df"] = empty_google_results_df()
+    state["brussels_google_diagnostics"] = idle_google_diagnostics(used_count)
+
+
+def applied_selection() -> tuple[tuple[str, ...], tuple[str, ...]]:
+    return (
+        tuple(sorted(st.session_state["brussels_applied_segment_names"])),
+        tuple(sorted(st.session_state["brussels_applied_bus_ids"])),
+    )
+
+
+def selected_segment_count() -> int:
+    segment_names, bus_ids = applied_selection()
+    gdf = load_brussels_map()
+    return int(get_selected_mask(gdf, list(segment_names), list(bus_ids)).sum())
+
+
+def reusable_google_age_seconds() -> float | None:
+    """Age of the last Google fetch if it can be reused for this RUN, else None."""
+    last = st.session_state["brussels_google_fetch"]
+    if not last or last["selection"] != applied_selection():
+        return None
+    age = time.time() - last["fetched_at"]
+    return age if age < GOOGLE_RESULT_REUSE_SECONDS else None
+
+
+def fetch_google_speeds() -> None:
+    """Fetch Google speeds for the applied selection (or reuse a fresh identical fetch)."""
+    reuse_age = reusable_google_age_seconds()
+    if reuse_age is not None:
+        diagnostics = dict(st.session_state["brussels_google_diagnostics"])
+        diagnostics["info_message"] = (
+            f"Google speeds from the RUN {int(reuse_age)} s ago were reused "
+            "(same selection); no new Google request was sent."
+        )
+        st.session_state["brussels_google_diagnostics"] = diagnostics
         return
 
-    used_before_run = get_monthly_google_request_count()
+    used_before_run = st.session_state["brussels_google_diagnostics"].get("usage_used_after_run", 0)
 
     try:
         gdf = load_brussels_map().copy()
@@ -121,6 +156,11 @@ def maybe_execute_google_fetch() -> None:
 
         st.session_state["brussels_google_results_df"] = google_result["google_results_df"]
         st.session_state["brussels_google_diagnostics"] = google_result["diagnostics"]
+        if google_result["diagnostics"].get("was_requested"):
+            st.session_state["brussels_google_fetch"] = {
+                "selection": applied_selection(),
+                "fetched_at": time.time(),
+            }
 
     except Exception as exc:
         st.session_state["brussels_google_results_df"] = empty_google_results_df()
@@ -128,5 +168,3 @@ def maybe_execute_google_fetch() -> None:
             used_before_run,
             error_message=f"Google Routes execution failed: {exc}",
         )
-    finally:
-        st.session_state["brussels_pending_google_fetch"] = False

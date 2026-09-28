@@ -1,11 +1,17 @@
 """Brussels page: three synced maps (STIB bus / estimated / Google speeds).
 
-Flow on each rerun:
-  1. session.py      - session state; RUN / Reset; Google Routes fetch after RUN
-  2. speed_layers.py - join live STIB, model estimates and Google speeds
-  3. this file       - diagnostics, maps, charts, CSV download, overview
+Each script run:
+  1. draws the controls and the content slots, filled with the last RUN's
+     result (unchanged, so the maps neither fade nor reload);
+  2. if RUN was pressed, updates it with a status box under the RUN button:
+     Google speeds (session.py), bus data and estimates (speed_layers.py);
+  3. refills the same slots once with the new result.
+Stage timings go to the server log (core/timing.py), not the page.
 """
 from __future__ import annotations
+
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
@@ -14,16 +20,21 @@ import streamlit.components.v1 as components
 from cities.brussels.charts import render_brussels_results_visualisation
 from cities.brussels.controls import brussels_left_controls
 from cities.brussels.map_data import get_filter_options
-from cities.brussels.session import handle_controls, init_session_state, maybe_execute_google_fetch
-from cities.brussels.speed_layers import prepare_brussels_page_payload
+from cities.brussels.session import (
+    fetch_google_speeds,
+    init_session_state,
+    on_reset_clicked,
+    on_run_clicked,
+    reusable_google_age_seconds,
+    selected_segment_count,
+)
+from cities.brussels.speed_layers import build_idle_payload, build_run_payload
 from cities.brussels.synced_maps import build_three_map_html
 from core.config import APPLY_DEMO_SPEED_CORRECTION
-from core.google_routes.service import (
-    GOOGLE_ROUTES_MONTHLY_LIMIT,
-    get_monthly_google_request_count,
-)
+from core.google_routes.service import GOOGLE_ROUTES_MONTHLY_LIMIT
 from core.layout import page_header, setup_page
 from core.map_render import show_map_with_legend
+from core.timing import timed
 
 # While the demo correction is on, the middle map is not pure model output,
 # so it is not labelled as such.
@@ -34,22 +45,8 @@ else:
     ESTIMATE_MAP_TITLE = "Estimated Speeds (Model)"
     PAGE_CAPTION = "Three synced maps for bus-derived, model-derived, and Google-derived speed comparison."
 
-settings_box, content_box = setup_page("Brussels")
-
-init_session_state()
-
-segment_options, bus_id_options = get_filter_options()
-
-controls = brussels_left_controls(
-    settings_box,
-    segment_options=segment_options,
-    bus_id_options=bus_id_options,
-    applied_segment_names=st.session_state["brussels_applied_segment_names"],
-    applied_bus_ids=st.session_state["brussels_applied_bus_ids"],
-)
-handle_controls(controls)
-
-maybe_execute_google_fetch()
+BRUSSELS_TZ = ZoneInfo("Europe/Brussels")
+MAP_HEIGHT = 560
 
 
 def reorder_columns(df: pd.DataFrame, priority_cols: list[str]) -> pd.DataFrame:
@@ -58,10 +55,9 @@ def reorder_columns(df: pd.DataFrame, priority_cols: list[str]) -> pd.DataFrame:
     return df[existing_priority + remaining_cols]
 
 
-def render_diagnostics(payload: dict) -> None:
+def render_diagnostics(payload: dict, google_diagnostics: dict) -> None:
     diagnostics = payload["diagnostics"]
     estimation_diagnostics = payload.get("estimation_diagnostics", {})
-    google_diagnostics = payload.get("google_diagnostics", {})
 
     if diagnostics["error_message"]:
         st.warning(diagnostics["error_message"])
@@ -118,64 +114,148 @@ def render_diagnostics(payload: dict) -> None:
         st.warning(google_diagnostics["error_message"])
 
 
-with content_box:
-    page_header("Brussels", PAGE_CAPTION)
 
-    with st.spinner("Preparing Brussels maps and speed layers..."):
-        payload = prepare_brussels_page_payload(
-            colorized=st.session_state["brussels_colorized"],
-            selected_segment_names=tuple(st.session_state["brussels_applied_segment_names"]),
-            selected_bus_ids=tuple(st.session_state["brussels_applied_bus_ids"]),
-            refresh_key=st.session_state["brussels_refresh_key"],
-        )
-
+def render_content(slots: dict, payload: dict) -> None:
+    """Fill the content slots; the same slots are reused so the layout never moves."""
+    google_diagnostics = st.session_state["brussels_google_diagnostics"]
     enriched_snapshot_df = payload.get("enriched_snapshot_df", pd.DataFrame())
-    google_diagnostics = payload.get("google_diagnostics", {})
     has_results = st.session_state["brussels_colorized"] and not enriched_snapshot_df.empty
 
-    render_diagnostics(payload)
+    with slots["diagnostics"].container():
+        render_diagnostics(payload, google_diagnostics)
 
-    html = build_three_map_html(
-        payload["geojson"],
-        payload["center_lat"],
-        payload["center_lon"],
-        estimate_title=ESTIMATE_MAP_TITLE,
-    )
-    show_map_with_legend(
-        lambda: components.html(html, height=560, scrolling=False),
-        ratio=(10, 1),
-    )
-
-    st.markdown("---")
-    st.markdown("### Performance Analysis")
-    if has_results:
-        render_brussels_results_visualisation(enriched_snapshot_df)
-
-    st.markdown("---")
-    st.markdown("### Results")
-    if has_results:
-        st.download_button(
-            label="Download results",
-            data=reorder_columns(
-                enriched_snapshot_df,
-                ["timestamp", "segment_id", "segment_name", "bus_lines"],
-            ).to_csv(index=False).encode("utf-8"),
-            file_name="results.csv",
-            mime="text/csv",
-            use_container_width=False,
+    if payload.get("html") is None:
+        with timed("brussels.maps_html") as log:
+            payload["html"] = build_three_map_html(
+                payload["geojson_text"],
+                payload["center_lat"],
+                payload["center_lon"],
+                estimate_title=ESTIMATE_MAP_TITLE,
+            )
+            log["bytes"] = len(payload["html"])
+    with slots["maps"].container():
+        show_map_with_legend(
+            lambda: components.html(payload["html"], height=MAP_HEIGHT, scrolling=False),
+            ratio=(10, 1),
         )
 
-    st.markdown("---")
-    st.markdown("### Overview")
+    with slots["analysis"].container():
+        if has_results:
+            with timed("brussels.charts"):
+                render_brussels_results_visualisation(enriched_snapshot_df)
 
-    google_used = google_diagnostics.get("usage_used_after_run", get_monthly_google_request_count())
+    with slots["results"].container():
+        if has_results:
+            st.download_button(
+                label="Download results",
+                data=reorder_columns(
+                    enriched_snapshot_df,
+                    ["timestamp", "segment_id", "segment_name", "bus_lines"],
+                ).to_csv(index=False).encode("utf-8"),
+                file_name="results.csv",
+                mime="text/csv",
+                use_container_width=False,
+            )
+
+    google_used = google_diagnostics.get("usage_used_after_run", 0)
     google_remaining = google_diagnostics.get(
         "usage_remaining_after_run",
         GOOGLE_ROUTES_MONTHLY_LIMIT - google_used,
     )
+    with slots["overview"].container():
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Google used", google_used)
+        col2.metric("Google left", google_remaining)
+        col3.metric("Google segments", payload["selected_google_count"])
+        col4.metric("STIB live", payload["live_bus_count"])
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Google used", google_used)
-    col2.metric("Google left", google_remaining)
-    col3.metric("Google segments", payload["selected_google_count"])
-    col4.metric("STIB live", payload["live_bus_count"])
+
+def run_update(status) -> dict:
+    """Fetch and compute a new result, reporting each stage in the status box."""
+    stage_labels = {
+        "bus_data": "Loading bus data",
+        "estimating": "Estimating speeds",
+        "updating_maps": "Updating maps",
+    }
+
+    def stage(label: str) -> None:
+        status.update(label=f"{label}…")
+        status.write(label)
+
+    reuse_age = reusable_google_age_seconds()
+    segment_count = selected_segment_count()
+    if reuse_age is not None:
+        stage(f"Reusing Google speeds from {int(reuse_age)} s ago (same selection)")
+    elif segment_count:
+        stage(f"Fetching Google speeds for {segment_count} selected segments")
+    else:
+        stage("No segments selected: skipping Google speeds")
+    with timed("brussels.google_fetch_step"):
+        fetch_google_speeds()
+
+    payload = build_run_payload(
+        google_results_df=st.session_state["brussels_google_results_df"],
+        refresh_key=st.session_state["brussels_refresh_key"],
+        on_stage=lambda name: stage(stage_labels[name]),
+    )
+    payload["updated_at"] = datetime.now(BRUSSELS_TZ)
+    return payload
+
+
+settings_box, content_box = setup_page("Brussels")
+
+init_session_state()
+
+segment_options, bus_id_options = get_filter_options()
+
+brussels_left_controls(
+    settings_box,
+    segment_options=segment_options,
+    bus_id_options=bus_id_options,
+    applied_segment_names=st.session_state["brussels_applied_segment_names"],
+    applied_bus_ids=st.session_state["brussels_applied_bus_ids"],
+    on_run=on_run_clicked,
+    on_reset=on_reset_clicked,
+)
+with settings_box:
+    status_slot = st.empty()
+
+with content_box:
+    page_header("Brussels", PAGE_CAPTION)
+    slots = {"diagnostics": st.empty(), "maps": st.empty()}
+    st.markdown("---")
+    st.markdown("### Performance Analysis")
+    slots["analysis"] = st.empty()
+    st.markdown("---")
+    st.markdown("### Results")
+    slots["results"] = st.empty()
+    st.markdown("---")
+    st.markdown("### Overview")
+    slots["overview"] = st.empty()
+
+previous_payload = st.session_state["brussels_payload"]
+render_content(slots, previous_payload or build_idle_payload())
+
+if st.session_state["brussels_run_requested"]:
+    with status_slot.container():
+        status = st.status("Starting update…")
+        st.caption(
+            "The maps keep showing the previous results until the update finishes."
+            if previous_payload
+            else "The maps are coloured when the update finishes."
+        )
+    try:
+        with timed("brussels.run_update"):
+            payload = run_update(status)
+            st.session_state["brussels_payload"] = payload
+            render_content(slots, payload)
+    except Exception as exc:
+        st.session_state["brussels_run_requested"] = False
+        with status_slot.container():
+            failed = st.status("Update failed", state="error", expanded=True)
+            failed.write(f"{type(exc).__name__}: {exc}")
+    else:
+        st.session_state["brussels_run_requested"] = False
+        status_slot.caption(f"Maps last updated at {payload['updated_at']:%H:%M:%S} (Brussels time).")
+elif previous_payload:
+    status_slot.caption(f"Maps last updated at {previous_payload['updated_at']:%H:%M:%S} (Brussels time).")

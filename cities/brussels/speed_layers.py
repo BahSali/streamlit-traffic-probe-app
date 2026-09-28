@@ -1,7 +1,9 @@
 """Brussels speed layers: live STIB bus speeds, model estimates and Google speeds.
 
-prepare_brussels_page_payload() joins them onto the map segments (for the
-three maps) and onto the STIB snapshot (for the charts and the CSV download).
+build_run_payload() joins them onto the map segments (for the three maps) and
+onto the STIB snapshot (for the charts and the CSV download). It reports its
+stages through on_stage so the page can show progress. build_idle_payload() is
+the uncoloured network shown before the first RUN.
 
 Estimated speeds: the model's values are kept in MODEL_ESTIMATE_COLUMNS; the
 public columns (est_speed on the map, estimated_speed in the table) hold the
@@ -11,8 +13,11 @@ public columns leave this module.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 
+import numpy as np
 import pandas as pd
+import shapely
 import streamlit as st
 
 from cities.brussels.map_data import (
@@ -21,7 +26,6 @@ from cities.brussels.map_data import (
     build_segment_metadata_df,
     load_brussels_map,
 )
-from cities.brussels.model import attach_prediction_df_to_gdf, build_estimation_artifacts
 from core.colors import NO_DATA_COLOR, NO_GOOGLE_DATA_COLOR, speed_color_or
 from core.data_sources import (
     get_mobility_twin_token,
@@ -29,11 +33,33 @@ from core.data_sources import (
     load_live_stib_segment_speed_lookup,
 )
 from core.estimation.correction import displayed_estimates
+from core.timing import timed
 from core.google_routes.service import (
     attach_google_results_to_map_gdf,
     attach_google_results_to_snapshot_df,
 )
 
+# Feature properties sent to the browser: what synced_maps.html reads, plus
+# the segment id and numeric speeds for inspection.
+MAP_PROPERTIES = [
+    "id",
+    "segment_name",
+    "bus_lines_display",
+    "bus_speed",
+    "est_speed",
+    "google_speed",
+    "bus_speed_str",
+    "est_speed_str",
+    "google_speed_str",
+    "google_duration_str",
+    "bus_color",
+    "est_color",
+    "google_color",
+    "bus_highlight_color",
+    "est_highlight_color",
+    "google_highlight_color",
+]
+COORDINATE_DECIMALS = 6  # ~0.1 m
 
 # Internal copies of the model's own estimates (map, table). Never shown.
 MODEL_ESTIMATE_COLUMNS = {"map": "est_speed_model", "table": "estimated_speed_model"}
@@ -173,136 +199,193 @@ def finalize_map_columns(gdf: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def prepare_brussels_page_payload(
-    colorized: bool,
-    selected_segment_names: tuple[str, ...],
-    selected_bus_ids: tuple[str, ...],
-    refresh_key: int,
-) -> dict:
+@st.cache_resource(show_spinner=False)
+def map_geometry_json(path: str = MAP_PATH) -> tuple[str, ...]:
+    """GeoJSON geometry of each map segment, serialized once per process."""
+    geometries = load_brussels_map(path).geometry.to_numpy()
+    rounded = shapely.transform(geometries, lambda coords: np.round(coords, COORDINATE_DECIMALS))
+    return tuple(shapely.to_geojson(rounded))
+
+
+def _json_value(value):
+    if value is None or (isinstance(value, float) and np.isnan(value)) or value is pd.NA:
+        return None
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def build_geojson_text(gdf: pd.DataFrame) -> str:
+    """FeatureCollection text for synced_maps.html (static geometry + current speeds)."""
+    geometry_json = map_geometry_json()
+    records = gdf[MAP_PROPERTIES].astype(object).to_numpy().tolist()
+    features = [
+        '{"type": "Feature", "properties": '
+        + json.dumps(dict(zip(MAP_PROPERTIES, map(_json_value, record))))
+        + ', "geometry": '
+        + geometry_json[map_fid]
+        + "}"
+        for record, map_fid in zip(records, gdf["map_fid"].astype(int))
+    ]
+    return '{"type": "FeatureCollection", "features": [' + ", ".join(features) + "]}"
+
+
+def _finish_payload(gdf: pd.DataFrame, **parts) -> dict:
+    with timed("brussels.map_columns"):
+        gdf = finalize_map_columns(gdf).drop(columns=list(MODEL_ESTIMATE_COLUMNS.values()), errors="ignore")
+
+    with timed("brussels.geojson_serialize", features=len(gdf)) as log:
+        geojson_text = build_geojson_text(gdf)
+        log["bytes"] = len(geojson_text)
+
+    minx, miny, maxx, maxy = gdf.total_bounds
+
+    return {
+        "geojson_text": geojson_text,
+        "center_lat": (miny + maxy) / 2,
+        "center_lon": (minx + maxx) / 2,
+        "selected_google_count": int(gdf["google_speed"].notna().sum()),
+        "segment_count": int(len(gdf)),
+        "live_bus_count": int(gdf["bus_speed"].notna().sum()),
+        **parts,
+    }
+
+
+@st.cache_data(show_spinner=False)
+def build_idle_payload() -> dict:
+    """The uncoloured network shown before the first RUN and after Reset."""
     gdf = load_brussels_map().copy()
+    for column in ["bus_speed", "est_speed", "google_speed", "google_duration_seconds"]:
+        gdf[column] = pd.NA
+    return _finish_payload(
+        gdf,
+        diagnostics=empty_live_diagnostics(gdf),
+        estimation_diagnostics=empty_estimation_diagnostics(gdf),
+        completed_snapshot_df=pd.DataFrame(),
+        enriched_snapshot_df=pd.DataFrame(),
+        model_estimates_df=pd.DataFrame(),
+    )
+
+
+def build_run_payload(
+    google_results_df: pd.DataFrame,
+    refresh_key: int,
+    on_stage: Callable[[str], None] = lambda stage: None,
+) -> dict:
+    """Everything the page shows after a RUN.
+
+    Stages reported through on_stage: "bus_data" (MobilityTwin live and
+    recent STIB data), "estimating" (model), "updating_maps".
+    """
+    with timed("brussels.load_map"):
+        gdf = load_brussels_map().copy()
     segment_metadata_df = build_segment_metadata_df(gdf)
 
-    diagnostics = empty_live_diagnostics(gdf)
     estimation_diagnostics = empty_estimation_diagnostics(gdf)
     completed_snapshot_df = pd.DataFrame()
     enriched_snapshot_df = pd.DataFrame()
+    prediction_df = None
 
-    google_results_df = st.session_state.get(
-        "brussels_google_results_df",
-        pd.DataFrame(columns=["segment_id", "google_speed_kmh", "google_duration_seconds"]),
-    )
-    google_diagnostics = st.session_state.get("brussels_google_diagnostics", {})
-
-    if colorized:
+    on_stage("bus_data")
+    with timed("brussels.live_bus_speeds"):
         gdf, diagnostics = attach_live_stib_bus_speeds(gdf)
 
-        token = get_mobility_twin_token()
-        if token:
-            try:
+    token = get_mobility_twin_token()
+    if token:
+        try:
+            with timed("brussels.completed_snapshot"):
                 completed_snapshot_df = get_completed_snapshot_for_ui(refresh_key)
-                completed_snapshot_df = attach_segment_metadata(
-                    completed_snapshot_df,
-                    segment_metadata_df,
-                    source_id_col="segment_id",
-                )
+            completed_snapshot_df = attach_segment_metadata(
+                completed_snapshot_df,
+                segment_metadata_df,
+                source_id_col="segment_id",
+            )
+
+            on_stage("estimating")
+            # Imported here so opening the page does not load PyTorch.
+            with timed("brussels.import_model"):
+                from cities.brussels.model import attach_prediction_df_to_gdf, build_estimation_artifacts
+
+            with timed("brussels.model_estimation"):
                 prediction_df, enriched_snapshot_df, estimation_diagnostics = build_estimation_artifacts(
                     completed_snapshot_df=completed_snapshot_df,
                     token=token,
                     gpkg_path=MAP_PATH,
                 )
 
-                gdf, matched_segments = attach_prediction_df_to_gdf(
-                    gdf=gdf,
-                    prediction_df=prediction_df,
-                )
-                estimation_diagnostics["matched_segments"] = matched_segments
+            gdf, matched_segments = attach_prediction_df_to_gdf(
+                gdf=gdf,
+                prediction_df=prediction_df,
+            )
+            estimation_diagnostics["matched_segments"] = matched_segments
 
-            except Exception as exc:
-                gdf["est_speed"] = pd.NA
-                estimation_diagnostics = empty_estimation_diagnostics(
-                    gdf,
-                    estimation_mode="pt_inference_historical_tmp",
-                    error_message=f"Temporary estimation failed: {exc}",
-                )
-        else:
+        except Exception as exc:
             gdf["est_speed"] = pd.NA
             estimation_diagnostics = empty_estimation_diagnostics(
                 gdf,
                 estimation_mode="pt_inference_historical_tmp",
-                error_message="Missing MobilityTwin token in Streamlit secrets.",
+                error_message=f"Temporary estimation failed: {exc}",
             )
+    else:
+        gdf["est_speed"] = pd.NA
+        estimation_diagnostics = empty_estimation_diagnostics(
+            gdf,
+            estimation_mode="pt_inference_historical_tmp",
+            error_message="Missing MobilityTwin token in Streamlit secrets.",
+        )
 
-        gdf = attach_google_results_to_map_gdf(
-            gdf=gdf,
+    gdf = attach_google_results_to_map_gdf(
+        gdf=gdf,
+        google_results_df=google_results_df,
+    )
+
+    gdf = use_displayed_estimates(
+        gdf,
+        est_col="est_speed",
+        google_col="google_speed",
+        id_col="id",
+        model_col=MODEL_ESTIMATE_COLUMNS["map"],
+    )
+
+    if not enriched_snapshot_df.empty:
+        enriched_snapshot_df = attach_google_results_to_snapshot_df(
+            snapshot_df=enriched_snapshot_df,
             google_results_df=google_results_df,
         )
 
-        gdf = use_displayed_estimates(
-            gdf,
-            est_col="est_speed",
-            google_col="google_speed",
-            id_col="id",
-            model_col=MODEL_ESTIMATE_COLUMNS["map"],
+        if "estimated_speed" not in enriched_snapshot_df.columns and "est_speed" in enriched_snapshot_df.columns:
+            enriched_snapshot_df["estimated_speed"] = enriched_snapshot_df["est_speed"]
+
+        if "google_speed_kmh" not in enriched_snapshot_df.columns and "google_speed" in enriched_snapshot_df.columns:
+            enriched_snapshot_df["google_speed_kmh"] = enriched_snapshot_df["google_speed"]
+
+        enriched_snapshot_df = use_displayed_estimates(
+            enriched_snapshot_df,
+            est_col="estimated_speed",
+            google_col="google_speed_kmh",
+            id_col="segment_id",
+            model_col=MODEL_ESTIMATE_COLUMNS["table"],
         )
 
-        if not enriched_snapshot_df.empty:
-            enriched_snapshot_df = attach_google_results_to_snapshot_df(
-                snapshot_df=enriched_snapshot_df,
-                google_results_df=google_results_df,
-            )
+        enriched_snapshot_df = attach_segment_metadata(
+            enriched_snapshot_df,
+            segment_metadata_df,
+            source_id_col="segment_id",
+        )
 
-            if "estimated_speed" not in enriched_snapshot_df.columns and "est_speed" in enriched_snapshot_df.columns:
-                enriched_snapshot_df["estimated_speed"] = enriched_snapshot_df["est_speed"]
-
-            if "google_speed_kmh" not in enriched_snapshot_df.columns and "google_speed" in enriched_snapshot_df.columns:
-                enriched_snapshot_df["google_speed_kmh"] = enriched_snapshot_df["google_speed"]
-
-            enriched_snapshot_df = use_displayed_estimates(
-                enriched_snapshot_df,
-                est_col="estimated_speed",
-                google_col="google_speed_kmh",
-                id_col="segment_id",
-                model_col=MODEL_ESTIMATE_COLUMNS["table"],
-            )
-
-            enriched_snapshot_df = attach_segment_metadata(
-                enriched_snapshot_df,
-                segment_metadata_df,
-                source_id_col="segment_id",
-            )
-    else:
-        gdf["bus_speed"] = pd.NA
-        gdf["est_speed"] = pd.NA
-        gdf["google_speed"] = pd.NA
-        gdf["google_duration_seconds"] = pd.NA
-
+    on_stage("updating_maps")
     model_estimates_df = enriched_snapshot_df.reindex(
         columns=["segment_id", MODEL_ESTIMATE_COLUMNS["table"]]
     )
-    gdf = finalize_map_columns(gdf).drop(columns=list(MODEL_ESTIMATE_COLUMNS.values()), errors="ignore")
-    enriched_snapshot_df = enriched_snapshot_df.drop(
-        columns=list(MODEL_ESTIMATE_COLUMNS.values()), errors="ignore"
-    )
-
-    minx, miny, maxx, maxy = gdf.total_bounds
-    center_lat = (miny + maxy) / 2
-    center_lon = (minx + maxx) / 2
-
-    geojson = json.loads(gdf.to_json())
-
-    return {
-        "geojson": geojson,
-        "center_lat": center_lat,
-        "center_lon": center_lon,
-        "selected_google_count": int(gdf["google_speed"].notna().sum()),
-        "segment_count": int(len(gdf)),
-        "live_bus_count": int(gdf["bus_speed"].notna().sum()),
-        "diagnostics": diagnostics,
-        "estimation_diagnostics": estimation_diagnostics,
-        "completed_snapshot_df": completed_snapshot_df,
+    return _finish_payload(
+        gdf,
+        diagnostics=diagnostics,
+        estimation_diagnostics=estimation_diagnostics,
+        completed_snapshot_df=completed_snapshot_df,
         # Public table: estimated_speed holds the displayed values.
-        "enriched_snapshot_df": enriched_snapshot_df,
+        enriched_snapshot_df=enriched_snapshot_df.drop(
+            columns=list(MODEL_ESTIMATE_COLUMNS.values()), errors="ignore"
+        ),
         # Model estimates before any demo correction (not displayed).
-        "model_estimates_df": model_estimates_df,
-        "google_diagnostics": google_diagnostics,
-    }
+        model_estimates_df=model_estimates_df,
+    )

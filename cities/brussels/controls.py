@@ -8,6 +8,8 @@ def brussels_left_controls(
     bus_id_options: list[str] | None = None,
     applied_segment_names: list[str] | None = None,
     applied_bus_ids: list[str] | None = None,
+    on_run=None,
+    on_reset=None,
 ) -> dict:
     segment_options = segment_options or []
     bus_id_options = bus_id_options or []
@@ -46,12 +48,14 @@ def brussels_left_controls(
             "RUN",
             use_container_width=True,
             key="bru_colorize_btn",
+            on_click=on_run,
         )
 
         reset = st.button(
             "Reset colorization",
             use_container_width=True,
             key="bru_reset_colorize_btn",
+            on_click=on_reset,
         )
 
     return {

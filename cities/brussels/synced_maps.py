@@ -5,14 +5,13 @@ fills in the data. Each GeoJSON feature must carry the *_color,
 *_highlight_color and *_str properties produced by speed_layers.py.
 """
 import html
-import json
 from pathlib import Path
 
 TEMPLATE_PATH = Path(__file__).with_name("synced_maps.html")
 
 
 def build_three_map_html(
-    geojson_obj,
+    geojson_text: str,
     center_lat,
     center_lon,
     estimate_title: str = "Estimated Speeds (Model)",
@@ -22,5 +21,6 @@ def build_three_map_html(
         .replace("__ESTIMATE_TITLE__", html.escape(estimate_title))
         .replace("__CENTER_LAT__", str(center_lat))
         .replace("__CENTER_LON__", str(center_lon))
-        .replace("__GEOJSON__", json.dumps(geojson_obj))
+        # "<\/" keeps text such as "</script>" in a street name from closing the script tag.
+        .replace("__GEOJSON__", geojson_text.replace("</", "<\\/"))
     )
