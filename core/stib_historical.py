@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from functools import lru_cache
+
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from datetime import datetime, timedelta, timezone
 
@@ -10,10 +13,13 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import requests
 
+from core.timing import timed
+
 
 API_URL = "https://api.mobilitytwin.brussels/parquetized"
 COMPONENT_NAME = "stib_vehicle_distance_parquetize"
 BRUSSELS_TIMEZONE = "Europe/Brussels"
+MAX_DOWNLOAD_WORKERS = 6
 
 
 def auth_request(url: str, token: str, timeout: int = 60) -> dict:
@@ -30,23 +36,19 @@ def download_parquets(url_list: list[str], timeout: int = 120) -> pa.Table:
     """
     Download parquet files and concatenate them into a single Arrow table.
     """
-    combined_table: pa.Table | None = None
-
-    for url in url_list:
+    def download(url: str) -> pa.Table:
         response = requests.get(url, timeout=timeout)
         response.raise_for_status()
+        return pq.read_table(BytesIO(response.content))
 
-        table = pq.read_table(BytesIO(response.content))
-
-        if combined_table is None:
-            combined_table = table
-        else:
-            combined_table = pa.concat_tables([combined_table, table])
-
-    if combined_table is None:
+    if not url_list:
         raise RuntimeError("No parquet data could be downloaded.")
 
-    return combined_table
+    # Downloaded concurrently, concatenated in the original order.
+    with ThreadPoolExecutor(max_workers=min(MAX_DOWNLOAD_WORKERS, len(url_list))) as executor:
+        tables = list(executor.map(download, url_list))
+
+    return pa.concat_tables(tables)
 
 
 def build_parquetized_url(start_dt: datetime, end_dt: datetime) -> str:
@@ -62,6 +64,12 @@ def build_parquetized_url(start_dt: datetime, end_dt: datetime) -> str:
 
 
 def load_segment_metadata_from_gpkg(gpkg_path: str) -> pd.DataFrame:
+    """Segment metadata from the (static) GPKG file, read once per process."""
+    return _read_segment_metadata(str(gpkg_path)).copy()
+
+
+@lru_cache(maxsize=4)
+def _read_segment_metadata(gpkg_path: str) -> pd.DataFrame:
     """
     Load segment metadata from the GPKG file.
 
@@ -120,16 +128,19 @@ def fetch_historical_point_speeds(
     if start_dt.tzinfo is None or end_dt.tzinfo is None:
         raise ValueError("start_dt and end_dt must be timezone-aware UTC datetimes.")
 
-    url = build_parquetized_url(start_dt, end_dt)
-    payload = auth_request(url, token)
-    parquet_urls = payload.get("results", [])
+    with timed("mobilitytwin.historical_request", caller="stib_historical") as log:
+        url = build_parquetized_url(start_dt, end_dt)
+        payload = auth_request(url, token)
+        parquet_urls = payload.get("results", [])
+        log["files"] = len(parquet_urls)
 
-    if not parquet_urls:
-        return pd.DataFrame(
-            columns=["bucket_time", "lineId", "pointId", "directionId", "avg_speed_kmh"]
-        )
+        if not parquet_urls:
+            return pd.DataFrame(
+                columns=["bucket_time", "lineId", "pointId", "directionId", "avg_speed_kmh"]
+            )
 
-    arrow_table = download_parquets(parquet_urls)
+        arrow_table = download_parquets(parquet_urls)
+        log["rows"] = arrow_table.num_rows
 
     con = duckdb.connect()
     con.register("combined_data", arrow_table)
@@ -236,7 +247,8 @@ def map_historical_point_speeds_to_segments(
             columns=["bucket_time", "segment_id", "avg_speed_kmh", "sample_count"]
         )
 
-    segment_metadata = load_segment_metadata_from_gpkg(gpkg_path)
+    with timed("gpkg.read_segment_metadata", caller="stib_historical"):
+        segment_metadata = load_segment_metadata_from_gpkg(gpkg_path)
 
     working_df = point_speed_df.copy()
     working_df["lineId"] = working_df["lineId"].astype(str).str.strip()

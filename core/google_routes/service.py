@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any
 
@@ -9,10 +10,13 @@ import pandas as pd
 import requests
 import streamlit as st
 
+from core.timing import timed
+
 
 GOOGLE_ROUTES_API_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
 GOOGLE_ROUTES_TIMEOUT_SECONDS = 20
 GOOGLE_ROUTES_MONTHLY_LIMIT = 5000
+GOOGLE_ROUTES_MAX_PARALLEL = 6
 
 MAX_GAP_METERS = 15.0
 MAX_TURN_DEG = 30.0
@@ -47,9 +51,10 @@ def get_google_sheet():
     return worksheet
 
 
-def ensure_current_month_row_exists() -> None:
+def read_usage_state() -> dict[str, Any]:
     """
-    Ensure a row exists for the current month in the Google Sheet.
+    Read the persistent monthly Google request counter from Google Sheets
+    (one sheet read; adds the current month's row if it is missing).
 
     Expected header:
     month_key | request_count
@@ -57,31 +62,14 @@ def ensure_current_month_row_exists() -> None:
     ws = get_google_sheet()
     month_key = get_current_month_key()
 
-    records = ws.get_all_records()
-    for row in records:
-        if str(row.get("month_key", "")).strip() == month_key:
-            return
-
-    ws.append_row([month_key, 0])
-
-
-def read_usage_state() -> dict[str, Any]:
-    """
-    Read the persistent monthly Google request counter from Google Sheets.
-    """
-    ws = get_google_sheet()
-    month_key = get_current_month_key()
-
-    ensure_current_month_row_exists()
-
-    records = ws.get_all_records()
-    for row in records:
+    for row in ws.get_all_records():
         if str(row.get("month_key", "")).strip() == month_key:
             return {
                 "month_key": month_key,
                 "request_count": int(row.get("request_count", 0)),
             }
 
+    ws.append_row([month_key, 0])
     return {
         "month_key": month_key,
         "request_count": 0,
@@ -89,7 +77,8 @@ def read_usage_state() -> dict[str, Any]:
 
 
 def get_monthly_google_request_count() -> int:
-    return int(read_usage_state()["request_count"])
+    with timed("google_sheets.read_count"):
+        return int(read_usage_state()["request_count"])
 
 
 def set_monthly_google_request_count(value: int) -> dict[str, Any]:
@@ -99,9 +88,10 @@ def set_monthly_google_request_count(value: int) -> dict[str, Any]:
     ws = get_google_sheet()
     month_key = get_current_month_key()
 
-    ensure_current_month_row_exists()
-
     cell = ws.find(month_key)
+    if cell is None:
+        ws.append_row([month_key, 0])
+        cell = ws.find(month_key)
     row_index = cell.row
     value = max(0, int(value))
 
@@ -116,19 +106,12 @@ def set_monthly_google_request_count(value: int) -> dict[str, Any]:
 def increment_monthly_google_request_count(increment: int) -> dict[str, Any]:
     """
     Increase the monthly request counter by the number of requests actually sent.
+    The counter is re-read first so requests made by other sessions are kept.
     """
     current = get_monthly_google_request_count()
     new_value = current + int(increment)
-    return set_monthly_google_request_count(new_value)
-
-
-def can_send_google_requests(
-    planned_request_count: int,
-    monthly_limit: int = GOOGLE_ROUTES_MONTHLY_LIMIT,
-) -> tuple[bool, int, int]:
-    used_count = get_monthly_google_request_count()
-    remaining_count = int(monthly_limit) - int(used_count)
-    return planned_request_count <= remaining_count, used_count, remaining_count
+    with timed("google_sheets.write_count"):
+        return set_monthly_google_request_count(new_value)
 
 
 def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -420,8 +403,12 @@ def convert_group_response_to_rows(
     return pd.DataFrame(rows)
 
 
-def build_empty_google_result(message: str | None = None) -> dict[str, Any]:
-    used_before_run = get_monthly_google_request_count()
+def build_empty_google_result(
+    message: str | None = None,
+    used_before_run: int | None = None,
+) -> dict[str, Any]:
+    if used_before_run is None:
+        used_before_run = get_monthly_google_request_count()
     remaining_before_run = GOOGLE_ROUTES_MONTHLY_LIMIT - used_before_run
 
     return {
@@ -488,15 +475,11 @@ def fetch_google_speeds_for_selected_segments(
 
     if planned_request_count == 0:
         return build_empty_google_result(
-            "No Google Routes groups could be built from the selected subset."
+            "No Google Routes groups could be built from the selected subset.",
+            used_before_run=used_before_run,
         )
 
-    is_allowed, _, _ = can_send_google_requests(
-        planned_request_count=planned_request_count,
-        monthly_limit=monthly_limit,
-    )
-
-    if not is_allowed:
+    if planned_request_count > remaining_before_run:
         return {
             "google_results_df": pd.DataFrame(
                 columns=["segment_id", "google_speed_kmh", "google_duration_seconds"]
@@ -520,28 +503,25 @@ def fetch_google_speeds_for_selected_segments(
             },
         }
 
-    success_count = 0
-    failure_count = 0
-    result_frames: list[pd.DataFrame] = []
-
-    for group_df in groups:
-        body = build_google_request_body(group_df)
-        response_payload, error_message = send_google_route_request(
-            api_key=api_key,
-            body=body,
-        )
-
-        if error_message:
-            failure_count += 1
-        else:
-            success_count += 1
-
-        result_frames.append(
-            convert_group_response_to_rows(
-                group_df=group_df,
-                response_payload=response_payload,
+    # One request per group, sent concurrently; each group is requested exactly once.
+    with timed("google_routes.requests", requests=len(groups), segments=len(selected_segments_df)):
+        with ThreadPoolExecutor(max_workers=min(GOOGLE_ROUTES_MAX_PARALLEL, len(groups))) as executor:
+            responses = list(
+                executor.map(
+                    lambda group_df: send_google_route_request(
+                        api_key=api_key,
+                        body=build_google_request_body(group_df),
+                    ),
+                    groups,
+                )
             )
-        )
+
+    failure_count = sum(1 for _, error_message in responses if error_message)
+    success_count = len(responses) - failure_count
+    result_frames = [
+        convert_group_response_to_rows(group_df=group_df, response_payload=response_payload)
+        for group_df, (response_payload, _) in zip(groups, responses)
+    ]
 
     sent_request_count = len(groups)
     usage_state = increment_monthly_google_request_count(sent_request_count)

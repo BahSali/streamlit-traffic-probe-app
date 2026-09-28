@@ -21,6 +21,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from core.config import MODELS_DIR
+from core.timing import timed
 
 
 BRUSSELS_TIMEZONE = "Europe/Brussels"
@@ -476,8 +477,36 @@ def download_and_concatenate_parquets(url_list: list[str]) -> pa.Table:
     return pa.concat_tables(ordered_tables, promote_options="default")
 
 
-@st.cache_data(show_spinner=False, ttl=300)
+# History windows that ended this long ago no longer change, so they are
+# cached for hours; recent windows keep the short cache.
+PAST_WINDOW_MIN_AGE = pd.Timedelta(hours=2)
+RECENT_WINDOW_TTL_SECONDS = 300
+PAST_WINDOW_TTL_SECONDS = 6 * 3600
+
+
 def fetch_raw_bucket_speeds(
+    token: str,
+    window_start_iso: str,
+    window_end_iso: str,
+) -> pd.DataFrame:
+    """Bus speeds per (15-min bucket, line, stop) for one window (Brussels local time)."""
+    now_local = pd.Timestamp.now(tz=BRUSSELS_TIMEZONE).tz_localize(None)
+    if pd.Timestamp(window_end_iso) < now_local - PAST_WINDOW_MIN_AGE:
+        return _fetch_past_window_speeds(token, window_start_iso, window_end_iso)
+    return _fetch_recent_window_speeds(token, window_start_iso, window_end_iso)
+
+
+@st.cache_data(show_spinner=False, ttl=RECENT_WINDOW_TTL_SECONDS)
+def _fetch_recent_window_speeds(token: str, window_start_iso: str, window_end_iso: str) -> pd.DataFrame:
+    return _download_window_speeds(token, window_start_iso, window_end_iso)
+
+
+@st.cache_data(show_spinner=False, ttl=PAST_WINDOW_TTL_SECONDS, max_entries=64)
+def _fetch_past_window_speeds(token: str, window_start_iso: str, window_end_iso: str) -> pd.DataFrame:
+    return _download_window_speeds(token, window_start_iso, window_end_iso)
+
+
+def _download_window_speeds(
     token: str,
     window_start_iso: str,
     window_end_iso: str,
@@ -488,21 +517,24 @@ def fetch_raw_bucket_speeds(
     start_ts = float(window_start.timestamp())
     end_ts = float(window_end.timestamp())
 
-    response = auth_request(
-        (
-            "https://api.mobilitytwin.brussels/parquetized"
-            f"?start_timestamp={start_ts}"
-            f"&end_timestamp={end_ts}"
-            f"&component={PARQUET_COMPONENT}"
-        ),
-        token=token,
-    )
+    with timed("mobilitytwin.historical_request", caller="model", window_start=window_start_iso) as log:
+        response = auth_request(
+            (
+                "https://api.mobilitytwin.brussels/parquetized"
+                f"?start_timestamp={start_ts}"
+                f"&end_timestamp={end_ts}"
+                f"&component={PARQUET_COMPONENT}"
+            ),
+            token=token,
+        )
 
-    parquet_urls = response.get("results", [])
-    if not parquet_urls:
-        return pd.DataFrame(columns=["local_time", "lineId", "pointId", "speed"])
+        parquet_urls = response.get("results", [])
+        log["files"] = len(parquet_urls)
+        if not parquet_urls:
+            return pd.DataFrame(columns=["local_time", "lineId", "pointId", "speed"])
 
-    arrow_table = download_and_concatenate_parquets(parquet_urls)
+        arrow_table = download_and_concatenate_parquets(parquet_urls)
+        log["rows"] = arrow_table.num_rows
 
     con = duckdb.connect()
     try:
@@ -1051,15 +1083,16 @@ def run_tmp_model_inference(
         )
 
     try:
-        historical_df, historical_meta = build_historical_feature_matrix(
-            token=token,
-            gpkg_path=gpkg_path,
-            snapshot_time=snapshot_time,
-            ordered_segment_ids=ordered_segment_ids,
-            recent_steps=int(config["recent_steps"]),
-            use_daily_lag=bool(config["use_daily_lag"]),
-            use_weekly_lag=bool(config["use_weekly_lag"]),
-        )
+        with timed("model.history_features"):
+            historical_df, historical_meta = build_historical_feature_matrix(
+                token=token,
+                gpkg_path=gpkg_path,
+                snapshot_time=snapshot_time,
+                ordered_segment_ids=ordered_segment_ids,
+                recent_steps=int(config["recent_steps"]),
+                use_daily_lag=bool(config["use_daily_lag"]),
+                use_weekly_lag=bool(config["use_weekly_lag"]),
+            )
         diagnostics.update(historical_meta)
 
         historical_df = fill_missing_historical_values(
@@ -1113,7 +1146,7 @@ def run_tmp_model_inference(
     x = build_model_input_window_from_historical(historical_df)
     diagnostics["input_shape"] = tuple(int(v) for v in x.shape)
 
-    with torch.inference_mode():
+    with timed("model.inference"), torch.inference_mode():
         y_hat = model(x).squeeze(0).detach().cpu().numpy().astype(np.float32)
 
     y_hat, inverse_used = inverse_transform_predictions_if_needed(
