@@ -131,3 +131,32 @@ def test_brussels_timings_go_to_the_log_not_the_page(offline, caplog):
             "brussels.geojson_serialize", "brussels.charts"} <= stages
     page_text = " ".join(e.value for e in [*at.caption, *at.markdown, *at.info])
     assert "timing" not in page_text and "brussels.run_update" not in page_text
+
+
+def test_brussels_run_twice_without_reset(offline):
+    """RUN, wait for the results, RUN again: no duplicate element, one download button."""
+
+    def assert_run_succeeded(at):
+        assert not at.exception, [e.value for e in at.exception]
+        page_text = " ".join(e.value for e in [*at.markdown, *at.caption])
+        assert "Duplicate" not in page_text and "Update failed" not in page_text
+        assert any(c.value.startswith("Maps last updated at") for c in at.caption)
+        assert len(at.get("download_button")) == 1
+
+    at, _, _ = run_brussels(offline)
+    assert_run_succeeded(at)
+    first = offline["downloads"][-1]
+
+    [run] = [b for b in at.button if b.label == "RUN"]
+    at = run.click().run()  # same selection, no Reset
+    assert_run_succeeded(at)
+    assert offline["downloads"][-1] == first  # Google reused within 90 s: same results
+
+    at.multiselect(key="bru_bus_ids").set_value(["71"]).run()  # a new selection, RUN a third time
+    [run] = [b for b in at.button if b.label == "RUN"]
+    at = run.click().run()
+    assert_run_succeeded(at)
+    assert offline["downloads"][-1] != first
+
+    at.multiselect(key="bru_bus_ids").set_value(["12"]).run()  # an unrelated rerun keeps one button
+    assert len(at.get("download_button")) == 1 and not at.exception

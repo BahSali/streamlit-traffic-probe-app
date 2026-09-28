@@ -118,9 +118,14 @@ def offline(monkeypatch):
         return wrapper
 
     monkeypatch.setattr(components, "html", lambda html, **_: record["html"].append(html))
-    monkeypatch.setattr(
-        st, "download_button", lambda label, data, **_: record["downloads"].append(data.decode()) and False
-    )
+    real_download_button = st.download_button
+
+    def recording_download_button(label, data, **kwargs):
+        # Record the file, and still create the real widget so its element id is checked.
+        record["downloads"].append(data.decode())
+        return real_download_button(label, data, **kwargs)
+
+    monkeypatch.setattr(st, "download_button", recording_download_button)
     monkeypatch.setattr(google, "get_google_sheet", lambda: sheet)
     monkeypatch.setattr(google, "send_google_route_request", counted("google_requests", fake_google_request))
     monkeypatch.setattr(stib_pipeline, "run_stib_pipeline", counted("stib_fetches", fake_stib_pipeline))

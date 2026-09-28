@@ -10,6 +10,7 @@ Stage timings go to the server log (core/timing.py), not the page.
 """
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -161,6 +162,9 @@ def render_content(slots: dict, payload: dict) -> None:
                 file_name="results.csv",
                 mime="text/csv",
                 use_container_width=False,
+                # During a RUN the previous result is drawn before the new one; one key
+                # per result keeps the two buttons from sharing an element id.
+                key=f"brussels_download_{payload['result_id']}",
             )
 
     # Authoritative monthly usage (core/google_routes/usage_store.py); None = unavailable.
@@ -224,6 +228,7 @@ def run_update(status) -> dict:
         on_stage=lambda name: stage(stage_labels[name]),
     )
     payload["updated_at"] = datetime.now(BRUSSELS_TZ)
+    payload["result_id"] = uuid.uuid4().hex
     return payload
 
 
