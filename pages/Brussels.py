@@ -74,12 +74,29 @@ def render_estimation_status(estimation_diagnostics: dict) -> None:
         st.caption(f"Model estimates available for {matched:,} road segments.")
 
 
-def render_diagnostics(payload: dict, google_diagnostics: dict) -> None:
+UPDATING_LINES = [
+    "Model estimates — updating…",
+    "Live STIB diagnostics — updating…",
+    "Historical coverage — updating…",
+]
+
+
+def render_diagnostics(payload: dict, google_diagnostics: dict, updating: bool = False) -> None:
+    """Status lines above the maps: model estimates, Live STIB, Historical coverage.
+
+    While a RUN is in progress (updating=True) the lines say so instead of
+    repeating the previous RUN's values.
+    """
+    if updating:
+        for line in UPDATING_LINES:
+            st.caption(line)
+        return
+
     diagnostics = payload["diagnostics"]
     estimation_diagnostics = payload.get("estimation_diagnostics", {})
 
-    if diagnostics["error_message"]:
-        st.warning(diagnostics["error_message"])
+    if estimation_diagnostics:
+        render_estimation_status(estimation_diagnostics)
 
     st.caption(
         "Live STIB diagnostics — "
@@ -91,12 +108,13 @@ def render_diagnostics(payload: dict, google_diagnostics: dict) -> None:
     )
 
     if estimation_diagnostics:
-        render_estimation_status(estimation_diagnostics)
-
         st.caption(
             "Historical coverage — "
             f"{estimation_diagnostics.get('historical_non_null_counts', {})}"
         )
+
+    if diagnostics["error_message"]:
+        st.warning(diagnostics["error_message"])
 
     if google_diagnostics.get("info_message"):
         st.info(google_diagnostics["info_message"])
@@ -105,15 +123,17 @@ def render_diagnostics(payload: dict, google_diagnostics: dict) -> None:
         st.warning(google_diagnostics["error_message"])
 
 
+def render_content(slots: dict, payload: dict, updating: bool = False) -> None:
+    """Fill the content slots; the same slots are reused so the layout never moves.
 
-def render_content(slots: dict, payload: dict) -> None:
-    """Fill the content slots; the same slots are reused so the layout never moves."""
+    updating=True: a RUN is in progress and payload is the previous result.
+    """
     google_diagnostics = st.session_state["brussels_google_diagnostics"]
     enriched_snapshot_df = payload.get("enriched_snapshot_df", pd.DataFrame())
     has_results = st.session_state["brussels_colorized"] and not enriched_snapshot_df.empty
 
     with slots["diagnostics"].container():
-        render_diagnostics(payload, google_diagnostics)
+        render_diagnostics(payload, google_diagnostics, updating=updating)
 
     if payload.get("html") is None:
         with timed("brussels.maps_html") as log:
@@ -251,7 +271,11 @@ with content_box:
     slots["overview"] = st.empty()
 
 previous_payload = st.session_state["brussels_payload"]
-render_content(slots, previous_payload or build_idle_payload())
+render_content(
+    slots,
+    previous_payload or build_idle_payload(),
+    updating=st.session_state["brussels_run_requested"],
+)
 
 if st.session_state["brussels_run_requested"]:
     with status_slot.container():
@@ -268,6 +292,9 @@ if st.session_state["brussels_run_requested"]:
             render_content(slots, payload)
     except Exception as exc:
         st.session_state["brussels_run_requested"] = False
+        # The maps still show the last successful result: show its status lines again.
+        with slots["diagnostics"].container():
+            render_diagnostics(previous_payload or build_idle_payload(), st.session_state["brussels_google_diagnostics"])
         with status_slot.container():
             failed = st.status("Update failed", state="error", expanded=True)
             failed.write(f"{type(exc).__name__}: {exc}")

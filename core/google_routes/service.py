@@ -514,9 +514,8 @@ def fetch_google_speeds_for_selected_segments(
     limit = configured_monthly_limit() if monthly_limit is None else int(monthly_limit)
 
     if selected_gdf.empty:
-        return build_empty_google_result(
-            "No segments selected for Google Routes. No Google request was sent."
-        )
+        # Nothing selected on purpose: no request and no message.
+        return build_empty_google_result()
 
     api_key = get_google_routes_api_key()
     if not api_key:

@@ -204,3 +204,86 @@ def test_brussels_warns_when_model_estimates_are_unavailable(offline, monkeypatc
     assert "Model estimates are not available for this run" in warnings
     assert "internal detail" not in page_text(at) and "Model estimates available" not in page_text(at)
     assert any(c.value.startswith("Historical coverage — ") for c in at.caption)
+
+
+def status_lines(at) -> list[str]:
+    """The captions above the maps, in page order (the left panel's captions excluded)."""
+    wanted = ("Model estimates", "Live STIB diagnostics", "Historical coverage")
+    return [c.value for c in at.caption if c.value.startswith(wanted)]
+
+
+def expected_lines(at) -> list[str]:
+    payload = at.session_state["brussels_payload"]
+    live = payload["diagnostics"]
+    estimation = payload["estimation_diagnostics"]
+    return [
+        f"Model estimates available for {estimation['matched_segments']:,} road segments.",
+        "Live STIB diagnostics — "
+        f"token: {'yes' if live['token_found'] else 'no'}, "
+        f"map has id: {'yes' if live['map_has_id_column'] else 'no'}, "
+        f"lookup size: {live['lookup_size']}, "
+        f"common segment ids: {live['common_segment_ids']}, "
+        f"matched segments: {live['matched_segments']}",
+        f"Historical coverage — {estimation.get('historical_non_null_counts', {})}",
+    ]
+
+
+def click_run(at):
+    [run] = [b for b in at.button if b.label == "RUN"]
+    at = run.click().run()
+    assert not at.exception
+    return at
+
+
+def test_status_lines_after_run_are_in_order_with_this_runs_values(offline):
+    at, _, _ = run_brussels(offline)
+    assert status_lines(at) == expected_lines(at)
+    assert status_lines(at)[0] == "Model estimates available for 1,366 road segments."
+
+
+def test_run_with_no_google_segments_shows_no_message_and_the_same_order(offline):
+    at = app("pages/Brussels.py").run()
+    at = click_run(at)  # nothing selected
+    assert offline["google_requests"] == 0
+    shown = " ".join(e.value for e in [*at.info, *at.warning, *at.caption, *at.markdown])
+    assert "No segments selected" not in shown and "No Google request was sent" not in shown
+    assert not at.warning
+    # Only the charts' own empty-state notes below the maps remain.
+    assert {i.value for i in at.info} <= {"No overlapping Estimated and Google speed data are available."}
+    assert status_lines(at) == expected_lines(at)
+    assert at.session_state["brussels_payload"]["selected_google_count"] == 0
+
+
+def test_the_previous_runs_status_is_not_shown_while_a_run_is_in_progress(offline, monkeypatch):
+    import streamlit as st
+
+    at, _, _ = run_brussels(offline)  # first RUN: its status lines are now on the page
+    captions = []
+    real_caption = st.caption
+
+    def recording_caption(body, *args, **kwargs):
+        captions.append(str(body))
+        return real_caption(body, *args, **kwargs)
+
+    monkeypatch.setattr(st, "caption", recording_caption)
+    at = click_run(at)  # second RUN, same selection
+
+    model_lines = [c for c in captions if c.startswith("Model estimates")]
+    # Drawn first as "updating…", then once with this RUN's values; never the old values first.
+    assert model_lines == ["Model estimates — updating…", "Model estimates available for 1,366 road segments."]
+    first_live = next(c for c in captions if c.startswith("Live STIB diagnostics"))
+    first_coverage = next(c for c in captions if c.startswith("Historical coverage"))
+    assert first_live == "Live STIB diagnostics — updating…"
+    assert first_coverage == "Historical coverage — updating…"
+    assert status_lines(at) == expected_lines(at)
+
+
+def test_limit_warning_still_shows_with_the_status_lines(offline, monkeypatch):
+    from core import config
+
+    monkeypatch.setattr(config, "GOOGLE_ROUTES_MONTHLY_LIMIT", 0)
+    at = app("pages/Brussels.py").run()
+    at.multiselect(key="bru_bus_ids").set_value(["12"]).run()
+    at = click_run(at)
+    assert "Google Routes monthly limit reached" in " ".join(w.value for w in at.warning)
+    assert status_lines(at) == expected_lines(at)
