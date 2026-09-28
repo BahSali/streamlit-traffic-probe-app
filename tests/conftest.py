@@ -80,16 +80,25 @@ def offline(monkeypatch):
     import core.google_routes.service as google
     import core.stib_pipeline as stib_pipeline
 
-    record = {"html": [], "downloads": []}
+    record = {"html": [], "downloads": [], "google_requests": 0, "stib_fetches": 0, "model_runs": 0}
     sheet = FakeSheet()
+
+    def counted(key, fn):
+        def wrapper(*args, **kwargs):
+            record[key] += 1
+            return fn(*args, **kwargs)
+        return wrapper
+
     monkeypatch.setattr(components, "html", lambda html, **_: record["html"].append(html))
     monkeypatch.setattr(
         st, "download_button", lambda label, data, **_: record["downloads"].append(data.decode()) and False
     )
     monkeypatch.setattr(google, "get_google_sheet", lambda: sheet)
-    monkeypatch.setattr(google, "send_google_route_request", fake_google_request)
-    monkeypatch.setattr(stib_pipeline, "run_stib_pipeline", fake_stib_pipeline)
-    monkeypatch.setattr(brussels_model, "run_tmp_model_inference", fake_model_inference)
+    monkeypatch.setattr(google, "send_google_route_request", counted("google_requests", fake_google_request))
+    monkeypatch.setattr(stib_pipeline, "run_stib_pipeline", counted("stib_fetches", fake_stib_pipeline))
+    monkeypatch.setattr(brussels_model, "run_tmp_model_inference", counted("model_runs", fake_model_inference))
+    # Cached results from earlier tests would hide the calls counted above.
+    st.cache_data.clear()
     monkeypatch.setenv("MOBILITY_TWIN_TOKEN", "fake")
     return record
 

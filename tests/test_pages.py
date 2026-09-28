@@ -76,3 +76,58 @@ def test_brussels_public_output_hides_correction_details(offline, monkeypatch, f
         assert "model-derived" not in captions
     else:
         assert "<div>Estimated Speeds (Model)</div>" in html
+
+
+def test_brussels_run_is_one_pass_and_later_reruns_reuse_it(offline):
+    at, features, table = run_brussels(offline)
+    assert offline["google_requests"] > 0
+    assert offline["stib_fetches"] == 1 and offline["model_runs"] == 1
+    assert any(c.value.startswith("Maps last updated at") for c in at.caption)
+    maps_after_run = offline["html"][-1]
+    calls = dict(offline)
+
+    # Editing a filter does not refetch, re-estimate or rebuild the maps.
+    at.multiselect(key="bru_bus_ids").set_value(["12"]).run()
+    assert not at.exception
+    assert offline["html"][-1] == maps_after_run
+    for key in ["google_requests", "stib_fetches", "model_runs"]:
+        assert offline[key] == calls[key]
+    assert any("Filters changed" in w.value for w in at.warning)
+
+
+def test_brussels_repeat_run_does_not_repeat_google_requests(offline):
+    at, _, first_table = run_brussels(offline)
+    sent = offline["google_requests"]
+
+    [run] = [b for b in at.button if b.label == "RUN"]
+    at = run.click().run()
+    assert not at.exception
+    assert offline["google_requests"] == sent
+    assert any("no new Google request was sent" in i.value for i in at.info)
+    second_table = pd.read_csv(io.StringIO(offline["downloads"][-1])).set_index("segment_id")
+    pd.testing.assert_series_equal(first_table["google_speed_kmh"], second_table["google_speed_kmh"])
+
+    # A different selection is a new request.
+    at.multiselect(key="bru_bus_ids").set_value(["12"]).run()
+    [run] = [b for b in at.button if b.label == "RUN"]
+    at = run.click().run()
+    assert offline["google_requests"] > sent
+
+
+def test_brussels_timings_go_to_the_log_not_the_page(offline, caplog):
+    import logging
+
+    from core.timing import logger
+
+    logger.addHandler(caplog.handler)
+    try:
+        with caplog.at_level(logging.INFO, logger="estimator.timing"):
+            at, _, _ = run_brussels(offline)
+    finally:
+        logger.removeHandler(caplog.handler)
+
+    stages = {record.getMessage().split()[1] for record in caplog.records}
+    assert {"brussels.run_update", "google_routes.requests", "brussels.model_estimation",
+            "brussels.geojson_serialize", "brussels.charts"} <= stages
+    page_text = " ".join(e.value for e in [*at.caption, *at.markdown, *at.info])
+    assert "timing" not in page_text and "brussels.run_update" not in page_text

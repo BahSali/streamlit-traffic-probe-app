@@ -84,6 +84,44 @@ says "estimated"; when `False` they read "Estimated Speeds (Model)" and
 overwritten. They are not displayed or exported in either mode. The
 Ixelles-Etterbeek page is not affected by this flag.
 
+## Brussels RUN, caching and timing logs
+
+Pressing **RUN** updates the page in one pass. The status box under the
+button names the current stage (fetching Google speeds, loading bus data,
+estimating speeds, updating maps). The maps keep showing the previous result,
+without fading, until the new one replaces it. Each RUN's result is kept for
+the session, so editing a filter afterwards redraws nothing and fetches
+nothing; the left panel shows when the maps were last updated.
+
+What is cached, and for how long:
+
+| Data | Cache | Why it is safe |
+| --- | --- | --- |
+| Map geometry (GeoJSON) and uncoloured network | process lifetime | static file |
+| GPKG segment metadata for the STIB fetchers | process lifetime | static file |
+| Model checkpoint | process lifetime | static file |
+| Live and last-hour STIB data, model estimates | 90 s (unchanged) | short enough to be current |
+| Model history windows ending < 2 h ago | 5 min (unchanged) | recent data |
+| Model history windows ending ≥ 2 h ago (1 day, 1–3 weeks) | 6 h | past data does not change |
+| Google Routes speeds | reused only when the same selection is RUN again within 90 s (the page says so) | avoids paying twice for the same request |
+
+Every stage is timed in the **server log** (Streamlit Cloud: *Manage app* →
+logs), never on the page. Lines look like:
+
+```
+timing google_routes.requests 1.007s requests=28 segments=53
+timing mobilitytwin.historical_request 0.607s caller=model window_start=... files=3 rows=...
+timing brussels.run_update 9.946s
+```
+
+Main stages: `google_sheets.read_count` / `write_count`,
+`google_routes.requests`, `mobilitytwin.live_request`,
+`mobilitytwin.historical_request` (per window, with file and row counts),
+`brussels.live_bus_speeds`, `brussels.import_model`, `model.history_features`,
+`model.inference`, `brussels.geojson_serialize`, `brussels.maps_html`,
+`brussels.charts`, and `brussels.run_update` (the whole RUN). Set the
+environment variable `ESTIMATOR_TIMING_LOG=0` to turn them off.
+
 ## Adding a city
 
 1. **Data**: put the road network (CSV or GeoPackage) in `data/` and any model
