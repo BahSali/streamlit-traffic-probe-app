@@ -104,3 +104,24 @@ def test_every_history_column_finds_data_at_the_right_time(snapshot):
         "daily_t_minus_1d", "weekly_t_minus_1w", "weekly_t_minus_2w", "weekly_t_minus_3w",
     }
     assert all(n > 0 for n in counts.values()), counts
+
+
+def test_last_hour_stib_history_for_map_1_uses_utc_now(monkeypatch):
+    """Map 1's fallback history never went through the naive-local path."""
+    import core.stib_historical as stib_historical
+    from datetime import datetime, timezone
+
+    fixed_now = datetime(2026, 7, 15, 6, 7, 31, tzinfo=timezone.utc)  # 08:07:31 in Brussels (summer)
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now
+
+    urls = []
+    monkeypatch.setattr(stib_historical, "datetime", FixedDatetime)
+    monkeypatch.setattr(stib_historical, "auth_request", lambda url, token: urls.append(url) or {"results": []})
+    stib_historical.fetch_historical_segment_speeds(token="fake", gpkg_path=GPKG, lookback_minutes=60)
+    start = float(re.search(r"start_timestamp=([\d.]+)", urls[0]).group(1))
+    end = float(re.search(r"end_timestamp=([\d.]+)", urls[0]).group(1))
+    assert end == fixed_now.timestamp() and end - start == 3600
