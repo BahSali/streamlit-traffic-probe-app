@@ -82,9 +82,8 @@ The flag affects every place the Brussels estimate appears:
 - **Performance Analysis**: metrics, charts and the Data Preview tab
 - **Results**: the `estimated_speed` column of the downloaded CSV
 
-When `True`, the middle map is titled "Estimated Speeds" and the page caption
-says "estimated"; when `False` they read "Estimated Speeds (Model)" and
-"model-derived". The model's own estimates are kept internally and never
+When `True`, the middle map is titled "Estimated Speeds"; when `False` it
+reads "Estimated Speeds (Model)". The model's own estimates are kept internally and never
 overwritten. They are not displayed or exported in either mode. The
 Ixelles-Etterbeek page is not affected by this flag.
 
@@ -132,7 +131,7 @@ environment variable `ESTIMATOR_TIMING_LOG=0` to turn them off.
 
 **Setting:** `GOOGLE_ROUTES_MONTHLY_LIMIT` in [`core/config.py`](core/config.py)
 (default 5000; set e.g. 10 to test). Overview ("Google used" / "Google left")
-and the diagnostics line show the authoritative counter against this value.
+show the authoritative counter against this value.
 
 **Where the count lives.** Google Sheets cannot enforce a limit across
 simultaneous users or app instances: it has no transactions or conditional

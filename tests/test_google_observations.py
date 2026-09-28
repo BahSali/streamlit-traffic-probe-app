@@ -27,8 +27,7 @@ def test_a_run_stores_one_batch_with_returned_values(offline):
     [timestamp] = df["batch_timestamp_utc"].unique()
     assert TIMESTAMP.match(timestamp)
     segments = df[df["segment_id"] != ""]
-    assert len(segments) == int(next(c.value for c in at.caption if "selected segments" in c.value)
-                                .split("selected segments: ")[1].split(",")[0])
+    assert len(segments) == at.session_state["brussels_google_diagnostics"]["selected_segment_count"]
     assert set(segments["distance_m"]) == {"300"}  # the fake legs: 300 m
     speeds = pd.to_numeric(segments["speed_kmh"])
     durations = pd.to_numeric(segments["duration_s"])

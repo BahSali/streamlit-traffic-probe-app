@@ -53,7 +53,7 @@ def used(record) -> int:
 def test_limit_setting_and_legacy_count_show_in_overview(limit_10):
     at = app("pages/Brussels.py").run()
     assert metrics(at)["Google used"] == "9" and metrics(at)["Google left"] == "1"
-    assert any("monthly limit: 10" in c.value for c in at.caption)
+    assert at.session_state["brussels_google_diagnostics"]["usage_monthly_limit"] == 10
 
 
 def test_9_of_10_then_10_of_10(limit_10):
@@ -82,8 +82,7 @@ def test_failed_requests_count_and_reused_results_do_not(limit_10, monkeypatch):
     monkeypatch.setattr(config, "GOOGLE_ROUTES_MONTHLY_LIMIT", 5000)
     monkeypatch.setattr(google, "send_google_route_request", lambda api_key, body: (None, "HTTP 500"))
     at = run(app("pages/Brussels.py").run(), bus_ids=["12"])
-    planned = int(next(c.value for c in at.caption if "planned requests" in c.value)
-                  .split("planned requests: ")[1].split(",")[0])
+    planned = at.session_state["brussels_google_diagnostics"]["request_count_planned"]
     assert planned > 1 and used(limit_10) == 9 + planned
 
     [button] = [b for b in at.button if b.label == "RUN"]

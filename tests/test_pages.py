@@ -73,7 +73,7 @@ def test_brussels_public_output_hides_correction_details(offline, monkeypatch, f
     html = offline["html"][-1]
     if flag:
         assert "<div>Estimated Speeds</div>" in html and "(Model)" not in html
-        assert "model-derived" not in captions
+        assert "model-derived" not in captions and "Three synced maps" not in captions
     else:
         assert "<div>Estimated Speeds (Model)</div>" in html
 
@@ -160,3 +160,47 @@ def test_brussels_run_twice_without_reset(offline):
 
     at.multiselect(key="bru_bus_ids").set_value(["12"]).run()  # an unrelated rerun keeps one button
     assert len(at.get("download_button")) == 1 and not at.exception
+
+
+INTERNAL_TERMS = ["Google Routes diagnostics", "Three synced maps", "Map 2 estimation", "pt_inference",
+                  "snapshot time", "bucket time", "model loaded", "fallback window", "planned requests"]
+
+
+def page_text(at) -> str:
+    return " ".join(e.value for e in [*at.markdown, *at.caption, *at.info, *at.warning])
+
+
+def test_brussels_visitor_text_before_and_after_run(offline):
+    at = app("pages/Brussels.py").run()
+    before = page_text(at)
+    assert not any(term in before for term in INTERNAL_TERMS)
+    assert "Model estimates" not in before  # nothing to report before RUN
+    assert "Historical coverage — {}" in before
+    assert {m.label for m in at.metric} >= {"Google used", "Google left"}
+
+    at, _, _ = run_brussels(offline)
+    after = page_text(at)
+    assert not any(term in after for term in INTERNAL_TERMS), [t for t in INTERNAL_TERMS if t in after]
+    assert "Model estimates available for 1,366 road segments." in after
+    coverage = next(c.value for c in at.caption if c.value.startswith("Historical coverage — "))
+    diagnostics = at.session_state["brussels_payload"]["estimation_diagnostics"]
+    assert coverage == f"Historical coverage — {diagnostics.get('historical_non_null_counts', {})}"
+    assert offline["google_requests"] > 0 and {m.label: m.value for m in at.metric}["Google used"] != "N/A"
+
+
+def test_brussels_warns_when_model_estimates_are_unavailable(offline, monkeypatch):
+    import cities.brussels.model as brussels_model
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("checkpoint street count mismatch (internal detail)")
+
+    monkeypatch.setattr(brussels_model, "run_tmp_model_inference", broken)
+    at = app("pages/Brussels.py").run()
+    at.multiselect(key="bru_bus_ids").set_value(["12"]).run()
+    [run] = [b for b in at.button if b.label == "RUN"]
+    at = run.click().run()
+    assert not at.exception
+    warnings = " ".join(w.value for w in at.warning)
+    assert "Model estimates are not available for this run" in warnings
+    assert "internal detail" not in page_text(at) and "Model estimates available" not in page_text(at)
+    assert any(c.value.startswith("Historical coverage — ") for c in at.caption)

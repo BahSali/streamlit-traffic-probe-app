@@ -10,6 +10,7 @@ Stage timings go to the server log (core/timing.py), not the page.
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -34,19 +35,18 @@ from cities.brussels.session import (
 from cities.brussels.speed_layers import build_idle_payload, build_run_payload
 from cities.brussels.synced_maps import build_three_map_html
 from core.config import APPLY_DEMO_SPEED_CORRECTION
-from core.google_routes.service import configured_monthly_limit
 from core.layout import page_header, setup_page
 from core.map_render import show_map_with_legend
 from core.timing import timed
+
+logger = logging.getLogger("estimator.brussels")
 
 # While the demo correction is on, the middle map is not pure model output,
 # so it is not labelled as such.
 if APPLY_DEMO_SPEED_CORRECTION:
     ESTIMATE_MAP_TITLE = "Estimated Speeds"
-    PAGE_CAPTION = "Three synced maps for bus-derived, estimated, and Google-derived speed comparison."
 else:
     ESTIMATE_MAP_TITLE = "Estimated Speeds (Model)"
-    PAGE_CAPTION = "Three synced maps for bus-derived, model-derived, and Google-derived speed comparison."
 
 BRUSSELS_TZ = ZoneInfo("Europe/Brussels")
 MAP_HEIGHT = 560
@@ -58,8 +58,20 @@ def reorder_columns(df: pd.DataFrame, priority_cols: list[str]) -> pd.DataFrame:
     return df[existing_priority + remaining_cols]
 
 
-def _or_na(value) -> str:
-    return "N/A" if value is None else str(value)
+def render_estimation_status(estimation_diagnostics: dict) -> None:
+    """One readable line about the model estimates (details go to the server log)."""
+    if estimation_diagnostics.get("estimation_mode") == "disabled":
+        return  # before the first RUN
+    matched = int(estimation_diagnostics.get("matched_segments") or 0)
+    error = estimation_diagnostics.get("error_message")
+    if error or matched == 0:
+        logger.warning("model estimates unavailable: %s", error or "no segment matched")
+        st.warning(
+            "Model estimates are not available for this run, so the estimated-speed map has no values. "
+            "Press RUN to try again."
+        )
+    else:
+        st.caption(f"Model estimates available for {matched:,} road segments.")
 
 
 def render_diagnostics(payload: dict, google_diagnostics: dict) -> None:
@@ -79,40 +91,12 @@ def render_diagnostics(payload: dict, google_diagnostics: dict) -> None:
     )
 
     if estimation_diagnostics:
-        st.caption(
-            "Map 2 estimation — "
-            f"mode: {estimation_diagnostics.get('estimation_mode', 'unknown')}, "
-            f"snapshot found: {'yes' if estimation_diagnostics.get('snapshot_found') else 'no'}, "
-            f"snapshot time: {estimation_diagnostics.get('snapshot_time') or 'N/A'}, "
-            f"bucket time: {estimation_diagnostics.get('snapshot_bucket_time') or 'N/A'}, "
-            f"model loaded: {'yes' if estimation_diagnostics.get('model_loaded') else 'no'}, "
-            f"historical ready: {'yes' if estimation_diagnostics.get('historical_window_ready') else 'no'}, "
-            f"fallback window: {'yes' if estimation_diagnostics.get('used_fallback_window') else 'no'}, "
-            f"matched segments: {estimation_diagnostics.get('matched_segments', 0)}"
-        )
+        render_estimation_status(estimation_diagnostics)
 
         st.caption(
             "Historical coverage — "
             f"{estimation_diagnostics.get('historical_non_null_counts', {})}"
         )
-
-    if google_diagnostics:
-        st.caption(
-            "Google Routes diagnostics — "
-            f"requested: {'yes' if google_diagnostics.get('was_requested') else 'no'}, "
-            f"selected segments: {google_diagnostics.get('selected_segment_count', 0)}, "
-            f"groups: {google_diagnostics.get('group_count', 0)}, "
-            f"planned requests: {google_diagnostics.get('request_count_planned', 0)}, "
-            f"sent requests: {google_diagnostics.get('request_count_sent', 0)}, "
-            f"success: {google_diagnostics.get('success_count', 0)}, "
-            f"failure: {google_diagnostics.get('failure_count', 0)}, "
-            f"monthly used after run: {_or_na(google_diagnostics.get('usage_used_after_run'))}, "
-            f"monthly remaining: {_or_na(google_diagnostics.get('usage_remaining_after_run'))}, "
-            f"monthly limit: {google_diagnostics.get('usage_monthly_limit', configured_monthly_limit())}"
-        )
-
-    if estimation_diagnostics.get("error_message"):
-        st.warning(estimation_diagnostics["error_message"])
 
     if google_diagnostics.get("info_message"):
         st.info(google_diagnostics["info_message"])
@@ -254,7 +238,7 @@ with settings_box:
     observation_warning_slot = st.empty()
 
 with content_box:
-    page_header("Brussels", PAGE_CAPTION)
+    page_header("Brussels")
     slots = {"diagnostics": st.empty(), "maps": st.empty()}
     st.markdown("---")
     st.markdown("### Performance Analysis")
