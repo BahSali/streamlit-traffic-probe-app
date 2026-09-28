@@ -99,7 +99,6 @@ def fake_model_inference(completed_snapshot_df, token, gpkg_path):
 def offline(monkeypatch):
     """Patch every external service and record the maps HTML and downloads."""
     import streamlit as st
-    import streamlit.components.v1 as components
 
     import cities.brussels.model as brussels_model
     import core.google_routes.service as google
@@ -117,7 +116,13 @@ def offline(monkeypatch):
             return fn(*args, **kwargs)
         return wrapper
 
-    monkeypatch.setattr(components, "html", lambda html, **_: record["html"].append(html))
+    real_iframe = st.iframe
+
+    def recording_iframe(src, **kwargs):
+        record["html"].append(src)
+        return real_iframe(src, **kwargs)
+
+    monkeypatch.setattr(st, "iframe", recording_iframe)
     real_download_button = st.download_button
 
     def recording_download_button(label, data, **kwargs):

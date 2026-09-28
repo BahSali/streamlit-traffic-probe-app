@@ -56,7 +56,7 @@ def render_brussels_results_visualisation(results_df: pd.DataFrame) -> None:
         render_speed_distribution_chart(df)
 
     with tab5:
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(df, width="stretch")
 
 
 def render_summary_metrics(df: pd.DataFrame) -> None:
@@ -149,7 +149,7 @@ def render_estimation_google_abs_error_by_street_chart(df: pd.DataFrame) -> None
         )
     )
 
-    st.altair_chart(chart, use_container_width=True)
+    st.altair_chart(chart, width="stretch")
 
 
 def render_estimation_vs_google_scatter(df: pd.DataFrame) -> None:
@@ -202,7 +202,7 @@ def render_estimation_vs_google_scatter(df: pd.DataFrame) -> None:
         title="Estimated Speed versus Google Speed",
     )
 
-    st.altair_chart(chart, use_container_width=True)
+    st.altair_chart(chart, width="stretch")
 
 
 def render_estimation_google_absolute_error_distribution(df: pd.DataFrame) -> None:
@@ -245,7 +245,7 @@ def render_estimation_google_absolute_error_distribution(df: pd.DataFrame) -> No
         )
     )
 
-    st.altair_chart(chart, use_container_width=True)
+    st.altair_chart(chart, width="stretch")
 
     mean_abs_error = plot_df["absolute_error"].mean()
     median_abs_error = plot_df["absolute_error"].median()
@@ -295,4 +295,4 @@ def render_speed_distribution_chart(df: pd.DataFrame) -> None:
         )
     )
 
-    st.altair_chart(chart, use_container_width=True)
+    st.altair_chart(chart, width="stretch")

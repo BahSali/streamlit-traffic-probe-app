@@ -40,6 +40,7 @@ cities/                        City-specific data loading, estimation and contro
     map_data.py                Map loading, segment metadata, filter options
     controls.py                Left-panel filters and RUN / Reset buttons
     session.py                 Session state, RUN / Reset, Google Routes fetch
+    update_job.py              Runs one RUN's update in the background, once per session
     speed_layers.py            Joins live STIB, model and Google speeds
     model.py                   Estimation model inference
     synced_maps.py/.html       The three synced Leaflet maps
@@ -89,12 +90,25 @@ Ixelles-Etterbeek page is not affected by this flag.
 
 ## Brussels RUN, caching and timing logs
 
-Pressing **RUN** updates the page in one pass. The status box under the
-button names the current stage (fetching Google speeds, loading bus data,
-estimating speeds, updating maps). The maps keep showing the previous result,
-without fading, until the new one replaces it. Each RUN's result is kept for
-the session, so editing a filter afterwards redraws nothing and fetches
-nothing; the left panel shows when the maps were last updated.
+Pressing **RUN** starts one update for that browser session. The status box
+under the button names the current stage (fetching Google speeds, loading bus
+data, estimating speeds, updating maps) and the seconds elapsed. The maps keep
+showing the previous result, without fading, until the new one replaces it.
+Each RUN's result is kept for the session, so editing a filter afterwards
+redraws nothing and fetches nothing; the left panel shows when the maps were
+last updated.
+
+One update at a time per session (`cities/brussels/update_job.py`):
+
+- The update runs in a background thread owned by the session, with the
+  filters applied when RUN was pressed. Reruns of the page (editing a filter,
+  clicking again) show its progress; they do not restart or repeat it.
+- RUN and Reset are disabled until it finishes; a click that still arrives
+  meanwhile is ignored. A filter edited during the update is kept and shows
+  the usual "Filters changed" warning, to be applied by the next RUN.
+- Other users' sessions are not blocked: each has its own update. When two
+  sessions need the same data at the same time (live STIB data, model history
+  windows), the shared caches compute it once and both use it.
 
 What is cached, and for how long:
 

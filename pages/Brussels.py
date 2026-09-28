@@ -3,36 +3,34 @@
 Each script run:
   1. draws the controls and the content slots, filled with the last RUN's
      result (unchanged, so the maps neither fade nor reload);
-  2. if RUN was pressed, updates it with a status box under the RUN button:
-     Google speeds (session.py), bus data and estimates (speed_layers.py);
-  3. refills the same slots once with the new result.
+  2. while this session's update is running (started by RUN in a background
+     job, see cities/brussels/update_job.py), shows its stages in a status
+     box under the disabled RUN button: Google speeds (session.py), bus data
+     and estimates (speed_layers.py);
+  3. when it finishes, refills the same slots once with the new result.
 Stage timings go to the server log (core/timing.py), not the page.
 """
 from __future__ import annotations
 
 import logging
-import uuid
-from datetime import datetime
-from zoneinfo import ZoneInfo
+import time
 
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 
 from cities.brussels.charts import render_brussels_results_visualisation
-from cities.brussels.controls import brussels_left_controls
+from cities.brussels.controls import brussels_left_controls, brussels_run_buttons
 from cities.brussels.map_data import get_filter_options
 from cities.brussels.session import (
-    fetch_google_speeds,
+    apply_update,
     flush_observation_batches,
     init_session_state,
     on_reset_clicked,
     on_run_clicked,
-    reusable_google_age_seconds,
-    selected_segment_count,
     unsaved_observation_batches,
+    update_job,
 )
-from cities.brussels.speed_layers import build_idle_payload, build_run_payload
+from cities.brussels.speed_layers import build_idle_payload
 from cities.brussels.synced_maps import build_three_map_html
 from core.config import APPLY_DEMO_SPEED_CORRECTION
 from core.layout import page_header, setup_page
@@ -48,8 +46,9 @@ if APPLY_DEMO_SPEED_CORRECTION:
 else:
     ESTIMATE_MAP_TITLE = "Estimated Speeds (Model)"
 
-BRUSSELS_TZ = ZoneInfo("Europe/Brussels")
 MAP_HEIGHT = 560
+# How often a script run checks the update's progress.
+UPDATE_POLL_SECONDS = 0.2
 
 
 def reorder_columns(df: pd.DataFrame, priority_cols: list[str]) -> pd.DataFrame:
@@ -146,7 +145,7 @@ def render_content(slots: dict, payload: dict, updating: bool = False) -> None:
             log["bytes"] = len(payload["html"])
     with slots["maps"].container():
         show_map_with_legend(
-            lambda: components.html(payload["html"], height=MAP_HEIGHT, scrolling=False),
+            lambda: st.iframe(payload["html"], height=MAP_HEIGHT),
             ratio=(10, 1),
         )
 
@@ -165,7 +164,7 @@ def render_content(slots: dict, payload: dict, updating: bool = False) -> None:
                 ).to_csv(index=False).encode("utf-8"),
                 file_name="results.csv",
                 mime="text/csv",
-                use_container_width=False,
+                width="content",
                 # During a RUN the previous result is drawn before the new one; one key
                 # per result keeps the two buttons from sharing an element id.
                 key=f"brussels_download_{payload['result_id']}",
@@ -201,40 +200,6 @@ def render_unsaved_observations(slot) -> None:
     )
 
 
-def run_update(status) -> dict:
-    """Fetch and compute a new result, reporting each stage in the status box."""
-    stage_labels = {
-        "bus_data": "Loading bus data",
-        "estimating": "Estimating speeds",
-        "updating_maps": "Updating maps",
-    }
-
-    def stage(label: str) -> None:
-        status.update(label=f"{label}…")
-        status.write(label)
-
-    reuse_age = reusable_google_age_seconds()
-    segment_count = selected_segment_count()
-    if reuse_age is not None:
-        stage(f"Reusing Google speeds from {int(reuse_age)} s ago (same selection)")
-    elif segment_count:
-        stage(f"Fetching Google speeds for {segment_count} selected segments")
-    # Nothing selected: no Google stage and no message (no request is sent).
-    with timed("brussels.google_fetch_step"):
-        fetch_google_speeds()
-    with timed("google_observations.store"):
-        flush_observation_batches()
-
-    payload = build_run_payload(
-        google_results_df=st.session_state["brussels_google_results_df"],
-        refresh_key=st.session_state["brussels_refresh_key"],
-        on_stage=lambda name: stage(stage_labels[name]),
-    )
-    payload["updated_at"] = datetime.now(BRUSSELS_TZ)
-    payload["result_id"] = uuid.uuid4().hex
-    return payload
-
-
 settings_box, content_box = setup_page("Brussels")
 
 init_session_state()
@@ -243,15 +208,15 @@ flush_observation_batches()
 
 segment_options, bus_id_options = get_filter_options()
 
-brussels_left_controls(
+controls = brussels_left_controls(
     settings_box,
     segment_options=segment_options,
     bus_id_options=bus_id_options,
     applied_segment_names=st.session_state["brussels_applied_segment_names"],
     applied_bus_ids=st.session_state["brussels_applied_bus_ids"],
-    on_run=on_run_clicked,
-    on_reset=on_reset_clicked,
 )
+job = update_job()
+brussels_run_buttons(controls["buttons_slot"], busy=job is not None, on_run=on_run_clicked, on_reset=on_reset_clicked)
 with settings_box:
     status_slot = st.empty()
     observation_warning_slot = st.empty()
@@ -270,13 +235,12 @@ with content_box:
     slots["overview"] = st.empty()
 
 previous_payload = st.session_state["brussels_payload"]
-render_content(
-    slots,
-    previous_payload or build_idle_payload(),
-    updating=st.session_state["brussels_run_requested"],
-)
+render_content(slots, previous_payload or build_idle_payload(), updating=job is not None)
 
-if st.session_state["brussels_run_requested"]:
+if job is not None:
+    # The update runs in this session's UpdateJob (started by RUN); this script run
+    # only shows its progress. A rerun meanwhile (e.g. a filter edit) stops this
+    # script run, and the next one picks up the same job: nothing is started twice.
     with status_slot.container():
         status = st.status("Starting update…")
         st.caption(
@@ -284,22 +248,35 @@ if st.session_state["brussels_run_requested"]:
             if previous_payload
             else "The maps are coloured when the update finishes."
         )
-    try:
-        with timed("brussels.run_update"):
-            payload = run_update(status)
-            st.session_state["brussels_payload"] = payload
-            render_content(slots, payload)
-    except Exception as exc:
-        st.session_state["brussels_run_requested"] = False
+    # The label also shows the elapsed seconds, so this loop reaches an st call at
+    # least once a second: that is where a script run replaced by a newer one
+    # (a rerun) stops, instead of polling on until the update ends.
+    shown, label = 0, None
+    while not job.wait(UPDATE_POLL_SECONDS):
+        while shown < len(job.stages):
+            status.write(job.stages[shown])
+            shown += 1
+        current = job.stages[-1] if job.stages else "Starting update"
+        new_label = f"{current}… ({int(time.time() - job.started_at)} s)"
+        if new_label != label:
+            status.update(label=new_label)
+            label = new_label
+
+    job.apply_once(apply_update)
+    with timed("google_observations.store"):
+        flush_observation_batches()
+    brussels_run_buttons(controls["buttons_slot"], busy=False, on_run=on_run_clicked, on_reset=on_reset_clicked)
+    if job.error is None:
+        payload = job.result["payload"]
+        render_content(slots, payload)
+        status_slot.caption(f"Maps last updated at {payload['updated_at']:%H:%M:%S} (Brussels time).")
+    else:
         # The maps still show the last successful result: show its status lines again.
         with slots["diagnostics"].container():
             render_diagnostics(previous_payload or build_idle_payload(), st.session_state["brussels_google_diagnostics"])
         with status_slot.container():
             failed = st.status("Update failed", state="error", expanded=True)
-            failed.write(f"{type(exc).__name__}: {exc}")
-    else:
-        st.session_state["brussels_run_requested"] = False
-        status_slot.caption(f"Maps last updated at {payload['updated_at']:%H:%M:%S} (Brussels time).")
+            failed.write(f"{type(job.error).__name__}: {job.error}")
 elif previous_payload:
     status_slot.caption(f"Maps last updated at {previous_payload['updated_at']:%H:%M:%S} (Brussels time).")
 

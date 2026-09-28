@@ -140,7 +140,7 @@ with content_box:
 
     col_a, col_b, col_c = st.columns([2, 3, 2])
     with col_b:
-        run_clicked = st.button("Run Traffic Estimation", use_container_width=True)
+        run_clicked = st.button("Run Traffic Estimation", width="stretch")
 
     if run_clicked:
         st.session_state["ixelles_last_run_error"] = None
