@@ -10,3 +10,6 @@ shapely
 numpy
 gspread
 google-auth
+altair
+pyarrow
+requests
