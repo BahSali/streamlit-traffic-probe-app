@@ -24,18 +24,14 @@ from core.google_routes.service import (
     fetch_google_speeds_for_selected_segments,
     get_monthly_google_request_count,
 )
-from core.nav_panel import render_left_panel
-from core.styles import inject_styles
+from core.layout import setup_page
 from core.ui.brussels_controls import brussels_left_controls
 from visualisation.brussels_results import render_brussels_results_visualisation
 from core.brussels_api_docs import render_brussels_api
 
 from core.estimation.correction import apply_temporary_estimation_correction
 
-st.set_page_config(page_title="Brussels", layout="wide")
-inject_styles()
-
-settings_box, content_box = render_left_panel("Brussels")
+settings_box, content_box = setup_page("Brussels")
 
 MAP_PATH = "data/Brussels_map_6km.gpkg"
 STIB_SECRET_KEY = "MOBILITY_TWIN_TOKEN"

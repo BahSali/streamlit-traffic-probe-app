@@ -1,3 +1,11 @@
+"""Speed colour scale and legend used by every map."""
+import pandas as pd
+
+# Line colours for segments without a value.
+NO_DATA_COLOR = "#222222"
+NO_GOOGLE_DATA_COLOR = "#000000"
+
+
 def get_speed_color(x):
     try:
         x = float(x)
@@ -9,6 +17,13 @@ def get_speed_color(x):
     if x < 40: return "#FFFF00"
     if x < 50: return "#9ACD32"
     return "#00B050"
+
+
+def speed_color_or(value, missing_color: str) -> str:
+    """Colour for a speed value, or missing_color when the value is missing."""
+    if value is None or pd.isna(value):
+        return missing_color
+    return get_speed_color(float(value))
 
 def legend_html():
     return """
