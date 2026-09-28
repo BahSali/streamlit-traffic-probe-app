@@ -106,6 +106,7 @@ What is cached, and for how long:
 | Live and last-hour STIB data, model estimates | 90 s (unchanged) | short enough to be current |
 | Model history windows ending < 2 h ago | 5 min (unchanged) | recent data |
 | Model history windows ending ≥ 2 h ago (1 day, 1–3 weeks) | 6 h | past data does not change |
+| MobilityTwin files behind those windows (a whole-day file per older day), keyed by file | 6 h, at most 8 file sets | same files → identical inputs; a moved window re-uses the day's file instead of downloading it again |
 | Google Routes speeds | reused only when the same selection is RUN again within 90 s (the page says so) | avoids paying twice for the same request |
 
 Every stage is timed in the **server log** (Streamlit Cloud: *Manage app* →
