@@ -17,12 +17,22 @@ from cities.brussels.map_data import get_filter_options
 from cities.brussels.session import handle_controls, init_session_state, maybe_execute_google_fetch
 from cities.brussels.speed_layers import prepare_brussels_page_payload
 from cities.brussels.synced_maps import build_three_map_html
+from core.config import APPLY_DEMO_SPEED_CORRECTION
 from core.google_routes.service import (
     GOOGLE_ROUTES_MONTHLY_LIMIT,
     get_monthly_google_request_count,
 )
 from core.layout import page_header, setup_page
 from core.map_render import show_map_with_legend
+
+# While the demo correction is on, the middle map is not pure model output,
+# so it is not labelled as such.
+if APPLY_DEMO_SPEED_CORRECTION:
+    ESTIMATE_MAP_TITLE = "Estimated Speeds"
+    PAGE_CAPTION = "Three synced maps for bus-derived, estimated, and Google-derived speed comparison."
+else:
+    ESTIMATE_MAP_TITLE = "Estimated Speeds (Model)"
+    PAGE_CAPTION = "Three synced maps for bus-derived, model-derived, and Google-derived speed comparison."
 
 settings_box, content_box = setup_page("Brussels")
 
@@ -51,7 +61,6 @@ def reorder_columns(df: pd.DataFrame, priority_cols: list[str]) -> pd.DataFrame:
 def render_diagnostics(payload: dict) -> None:
     diagnostics = payload["diagnostics"]
     estimation_diagnostics = payload.get("estimation_diagnostics", {})
-    c_estimation_diagnostics = payload.get("c_estimation_diagnostics", {})
     google_diagnostics = payload.get("google_diagnostics", {})
 
     if diagnostics["error_message"]:
@@ -102,14 +111,6 @@ def render_diagnostics(payload: dict) -> None:
     if estimation_diagnostics.get("error_message"):
         st.warning(estimation_diagnostics["error_message"])
 
-    if c_estimation_diagnostics:
-        st.caption(
-            f"el_row: {c_estimation_diagnostics.get('eligible_rows', 0)+54}, "
-            f"co_row: {c_estimation_diagnostics.get('c_rows', 0)}"
-        )
-
-    if c_estimation_diagnostics.get("error_message"):
-        st.warning(c_estimation_diagnostics["error_message"])
     if google_diagnostics.get("info_message"):
         st.info(google_diagnostics["info_message"])
 
@@ -118,10 +119,7 @@ def render_diagnostics(payload: dict) -> None:
 
 
 with content_box:
-    page_header(
-        "Brussels",
-        "Three synced maps for bus-derived, model-derived, and Google-derived speed comparison.",
-    )
+    page_header("Brussels", PAGE_CAPTION)
 
     with st.spinner("Preparing Brussels maps and speed layers..."):
         payload = prepare_brussels_page_payload(
@@ -141,6 +139,7 @@ with content_box:
         payload["geojson"],
         payload["center_lat"],
         payload["center_lon"],
+        estimate_title=ESTIMATE_MAP_TITLE,
     )
     show_map_with_legend(
         lambda: components.html(html, height=560, scrolling=False),

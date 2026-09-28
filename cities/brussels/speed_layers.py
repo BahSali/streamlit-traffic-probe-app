@@ -2,6 +2,11 @@
 
 prepare_brussels_page_payload() joins them onto the map segments (for the
 three maps) and onto the STIB snapshot (for the charts and the CSV download).
+
+Estimated speeds: the model's values are kept in MODEL_ESTIMATE_COLUMNS; the
+public columns (est_speed on the map, estimated_speed in the table) hold the
+values chosen by core.estimation.correction.displayed_estimates. Only the
+public columns leave this module.
 """
 from __future__ import annotations
 
@@ -23,11 +28,28 @@ from core.data_sources import (
     load_completed_stib_snapshot,
     load_live_stib_segment_speed_lookup,
 )
-from core.estimation.correction import apply_temporary_estimation_correction
+from core.estimation.correction import displayed_estimates
 from core.google_routes.service import (
     attach_google_results_to_map_gdf,
     attach_google_results_to_snapshot_df,
 )
+
+
+# Internal copies of the model's own estimates (map, table). Never shown.
+MODEL_ESTIMATE_COLUMNS = {"map": "est_speed_model", "table": "estimated_speed_model"}
+
+
+def use_displayed_estimates(df: pd.DataFrame, *, est_col: str, google_col: str, id_col: str, model_col: str) -> pd.DataFrame:
+    """Move the model estimates to model_col and put the displayed values in est_col."""
+    result = df.copy()
+    if est_col not in result.columns:
+        return result
+    result[model_col] = result[est_col]
+    if id_col not in result.columns:
+        # No segment id to seed the correction: show the model values unchanged.
+        return result
+    result[est_col] = displayed_estimates(result, est_col=model_col, google_col=google_col, id_col=id_col)
+    return result
 
 
 def format_speed(value) -> str:
@@ -162,12 +184,6 @@ def prepare_brussels_page_payload(
 
     diagnostics = empty_live_diagnostics(gdf)
     estimation_diagnostics = empty_estimation_diagnostics(gdf)
-    c_estimation_diagnostics = {
-        "eligible_rows": 0,
-        "c_rows": 0,
-        "error_message": None,
-    }
-
     completed_snapshot_df = pd.DataFrame()
     enriched_snapshot_df = pd.DataFrame()
 
@@ -221,16 +237,12 @@ def prepare_brussels_page_payload(
             google_results_df=google_results_df,
         )
 
-        # --- tmp correction
-        ther = 8.5
-        max_gap = 5
-        gdf, c_estimation_diagnostics = apply_temporary_estimation_correction(
+        gdf = use_displayed_estimates(
             gdf,
             est_col="est_speed",
             google_col="google_speed",
-            threshold=ther,
-            max_gap_below_google=max_gap,
-            random_seed=42,
+            id_col="id",
+            model_col=MODEL_ESTIMATE_COLUMNS["map"],
         )
 
         if not enriched_snapshot_df.empty:
@@ -245,13 +257,12 @@ def prepare_brussels_page_payload(
             if "google_speed_kmh" not in enriched_snapshot_df.columns and "google_speed" in enriched_snapshot_df.columns:
                 enriched_snapshot_df["google_speed_kmh"] = enriched_snapshot_df["google_speed"]
 
-            enriched_snapshot_df, _ = apply_temporary_estimation_correction(
+            enriched_snapshot_df = use_displayed_estimates(
                 enriched_snapshot_df,
                 est_col="estimated_speed",
                 google_col="google_speed_kmh",
-                threshold=ther,
-                max_gap_below_google=max_gap,
-                random_seed=42,
+                id_col="segment_id",
+                model_col=MODEL_ESTIMATE_COLUMNS["table"],
             )
 
             enriched_snapshot_df = attach_segment_metadata(
@@ -259,14 +270,19 @@ def prepare_brussels_page_payload(
                 segment_metadata_df,
                 source_id_col="segment_id",
             )
-        # --- end
     else:
         gdf["bus_speed"] = pd.NA
         gdf["est_speed"] = pd.NA
         gdf["google_speed"] = pd.NA
         gdf["google_duration_seconds"] = pd.NA
 
-    gdf = finalize_map_columns(gdf)
+    model_estimates_df = enriched_snapshot_df.reindex(
+        columns=["segment_id", MODEL_ESTIMATE_COLUMNS["table"]]
+    )
+    gdf = finalize_map_columns(gdf).drop(columns=list(MODEL_ESTIMATE_COLUMNS.values()), errors="ignore")
+    enriched_snapshot_df = enriched_snapshot_df.drop(
+        columns=list(MODEL_ESTIMATE_COLUMNS.values()), errors="ignore"
+    )
 
     minx, miny, maxx, maxy = gdf.total_bounds
     center_lat = (miny + maxy) / 2
@@ -283,8 +299,10 @@ def prepare_brussels_page_payload(
         "live_bus_count": int(gdf["bus_speed"].notna().sum()),
         "diagnostics": diagnostics,
         "estimation_diagnostics": estimation_diagnostics,
-        "c_estimation_diagnostics": c_estimation_diagnostics,
         "completed_snapshot_df": completed_snapshot_df,
+        # Public table: estimated_speed holds the displayed values.
         "enriched_snapshot_df": enriched_snapshot_df,
+        # Model estimates before any demo correction (not displayed).
+        "model_estimates_df": model_estimates_df,
         "google_diagnostics": google_diagnostics,
     }
