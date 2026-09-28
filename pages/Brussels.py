@@ -219,8 +219,7 @@ def run_update(status) -> dict:
         stage(f"Reusing Google speeds from {int(reuse_age)} s ago (same selection)")
     elif segment_count:
         stage(f"Fetching Google speeds for {segment_count} selected segments")
-    else:
-        stage("No segments selected: skipping Google speeds")
+    # Nothing selected: no Google stage and no message (no request is sent).
     with timed("brussels.google_fetch_step"):
         fetch_google_speeds()
     with timed("google_observations.store"):

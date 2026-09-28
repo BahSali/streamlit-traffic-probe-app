@@ -21,6 +21,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from core.config import MODELS_DIR
+from core.stib_historical import ping_time_range_utc
 from core.timing import timed
 
 
@@ -555,6 +556,17 @@ def _download_window_speeds(
 
         arrow_table = download_and_concatenate_parquets(parquet_urls)
         log["rows"] = arrow_table.num_rows
+        # Requested vs returned ping times: shows whether the end of a window is
+        # empty because MobilityTwin has not published those pings yet.
+        log["requested_utc"] = (
+            f"{pd.Timestamp(start_ts, unit='s'):%H:%M}-{pd.Timestamp(end_ts, unit='s'):%H:%M}"
+        )
+        pings = ping_time_range_utc(arrow_table)
+        if pings is not None:
+            log["pings_utc"] = f"{pings[0]:%H:%M}-{pings[1]:%H:%M}"
+            log["empty_minutes_at_window_end"] = round(
+                max(0.0, (pd.Timestamp(end_ts, unit="s", tz="UTC") - pings[1]).total_seconds() / 60), 1
+            )
 
     con = duckdb.connect()
     try:

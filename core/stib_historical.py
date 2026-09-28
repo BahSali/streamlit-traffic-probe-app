@@ -10,6 +10,7 @@ import duckdb
 import geopandas as gpd
 import pandas as pd
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 import requests
 
@@ -30,6 +31,21 @@ def auth_request(url: str, token: str, timeout: int = 60) -> dict:
     response = requests.get(url, headers=headers, timeout=timeout)
     response.raise_for_status()
     return response.json()
+
+
+def ping_time_range_utc(table: pa.Table) -> tuple[pd.Timestamp, pd.Timestamp] | None:
+    """Earliest and latest ping time (UTC) in a MobilityTwin position table.
+
+    For the timing log only: it shows how recent the returned data really is.
+    Naive values are UTC, as the queries in this app assume.
+    """
+    if table.num_rows == 0 or "date" not in table.column_names:
+        return None
+    bounds = pc.min_max(table["date"]).as_py()
+    if bounds["min"] is None:
+        return None
+    to_utc = lambda v: pd.Timestamp(v).tz_localize("UTC") if pd.Timestamp(v).tzinfo is None else pd.Timestamp(v).tz_convert("UTC")  # noqa: E731
+    return to_utc(bounds["min"]), to_utc(bounds["max"])
 
 
 def download_parquets(url_list: list[str], timeout: int = 120) -> pa.Table:
@@ -141,6 +157,10 @@ def fetch_historical_point_speeds(
 
         arrow_table = download_parquets(parquet_urls)
         log["rows"] = arrow_table.num_rows
+        pings = ping_time_range_utc(arrow_table)
+        if pings is not None:
+            log["latest_ping_utc"] = f"{pings[1]:%H:%M:%S}"
+            log["latest_ping_age_min"] = round((end_dt - pings[1]).total_seconds() / 60, 1)
 
     con = duckdb.connect()
     con.register("combined_data", arrow_table)
