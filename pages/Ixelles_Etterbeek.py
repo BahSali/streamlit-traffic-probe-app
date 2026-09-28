@@ -7,7 +7,13 @@ from streamlit_folium import st_folium
 from core.styles import inject_styles
 from core.colors import get_speed_color, legend_html
 from core.data_sources import load_csv
-from core.pipelines import run_estimation_pipeline, load_results_dict
+from cities.ixelles_etterbeek.pipeline import (
+    CSV_SEP,
+    NETWORK_CSV,
+    RESULTS_CSV,
+    load_results_dict,
+    run_estimation_pipeline,
+)
 from core.nav_panel import render_left_panel
 
 
@@ -43,9 +49,8 @@ with settings_box:
 # ----------------------------------------------------
 
 
-DATA_PATH = "data/Brux_net.csv"
-RESULTS_PATH = "results.csv"
-CSV_SEP = ";"
+DATA_PATH = str(NETWORK_CSV)
+RESULTS_PATH = str(RESULTS_CSV)
 
 
 @st.cache_data(show_spinner=False)

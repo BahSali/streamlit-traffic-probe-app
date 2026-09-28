@@ -1,3 +1,12 @@
+"""Run the Ixelles-Etterbeek CNN on STIB speeds and write the results CSV.
+
+Step 2 of the Ixelles-Etterbeek pipeline (see pipeline.py). Reads the
+``STIB_speeds.csv`` written by dataset_generator.py and writes the results
+file read by pages/Ixelles_Etterbeek.py (columns Time;SegmentID;Speed;
+Prediction;StreetName).
+"""
+from pathlib import Path
+
 import torch
 import torch.nn as nn
 import pandas as pd
@@ -29,12 +38,10 @@ class CNNTimeSeries(nn.Module):
         x = self.relu(self.fc1(x))
         return self.fc2(x)
         
-def main():
+def main(weights_path: Path, speeds_csv: Path, segments_csv: Path, output_path: Path) -> Path:
     # Load model
-    # model = torch.load('full_model_new_loss.pth')
-    # model = torch.load('full_model_new_loss.pth', weights_only=False)
     model = CNNTimeSeries(num_features=5, lookback=10)
-    model.load_state_dict(torch.load('full_model_new_loss_v2.pth', map_location='cpu'))
+    model.load_state_dict(torch.load(weights_path, map_location='cpu'))
     model.eval()
 
     
@@ -42,7 +49,7 @@ def main():
     print("Model loaded successfully!")
     
     # Load data
-    df_raw = pd.read_csv('STIB_speeds.csv', sep=',', encoding='latin1')
+    df_raw = pd.read_csv(speeds_csv, sep=',', encoding='latin1')
     df_raw.columns = df_raw.columns.str.strip()
     df = df_raw.copy()
     
@@ -116,7 +123,7 @@ def main():
     
     # Add StreetName if you have the segment file
     try:
-        seg_file = 'Etterbeek_STIB_segments.csv'
+        seg_file = segments_csv
         df_seg  = pd.read_csv(seg_file, sep=';', encoding='latin1')
         df_seg.columns = df_seg.columns.str.strip()
         df_seg = df_seg.rename(columns={'Name - start': 'Name-start', 'Name - stop': 'Name-stop'})
@@ -151,7 +158,7 @@ def main():
     
     ### === NEW BLOCK: add random prediction for missing streets ===
     # Load all street IDs from segments file
-    seg_file = 'Etterbeek_STIB_segments.csv'
+    seg_file = segments_csv
     df_seg = pd.read_csv(seg_file, sep=';', encoding='latin1')
     df_seg.columns = df_seg.columns.str.strip()
     segment_ids = set(df_seg['ID_graph_edge'].astype(str))
@@ -178,6 +185,6 @@ def main():
         df_final = pd.concat([df_final, pd.DataFrame([new_row])], ignore_index=True)
 
     # ========== SAVE ==========
-    output_file = 'results.csv'
-    df_final.to_csv(output_file, sep=';', encoding='latin1', index=False)
-    print(f"\nSaved {output_file} with predictions!")
+    df_final.to_csv(output_path, sep=';', encoding='latin1', index=False)
+    print(f"\nSaved {output_path} with predictions!")
+    return output_path

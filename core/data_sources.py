@@ -1,10 +1,24 @@
 from __future__ import annotations
 
+import os
+
 import pandas as pd
 import geopandas as gpd
 import requests
 import streamlit as st
 from shapely.geometry import shape
+
+
+MOBILITY_TWIN_SECRET_KEY = "MOBILITY_TWIN_TOKEN"
+
+
+def get_mobility_twin_token() -> str | None:
+    """MobilityTwin (api.mobilitytwin.brussels) token from Streamlit secrets or the environment."""
+    try:
+        token = st.secrets.get(MOBILITY_TWIN_SECRET_KEY)
+    except Exception:  # no secrets.toml at all
+        token = None
+    return token or os.environ.get(MOBILITY_TWIN_SECRET_KEY)
 
 
 @st.cache_data(show_spinner=False)

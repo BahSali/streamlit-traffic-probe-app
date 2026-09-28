@@ -1,19 +1,29 @@
-from datetime import datetime, timedelta
+"""Build the Ixelles-Etterbeek STIB speed time series from MobilityTwin data.
+
+Step 1 of the Ixelles-Etterbeek pipeline (see pipeline.py). Downloads the last
+10 hours of STIB vehicle positions, turns them into 15-minute average speeds
+per graph edge and writes ``STIB_speeds.csv`` into ``work_dir`` for
+fusion_model.py.
+"""
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
+from pathlib import Path
+
 import pandas as pd
 import duckdb
 import pyarrow as pa
 import pyarrow.parquet as pq
 import requests
 
-def main():
+def main(token: str, segments_csv: Path, work_dir: Path) -> Path:
+    work_dir = Path(work_dir)
+    work_dir.mkdir(parents=True, exist_ok=True)
+
     # 1) Collect data
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     ten_hours_ago = now - timedelta(hours=10)
     min_date_utc = int(ten_hours_ago.timestamp())
     max_date_utc = int(now.timestamp())
-    
-    TOKEN = "dd246f5afde3eceba4aa392777df19de4f1b2e71339a2450c24e70e83a54ad3dbe1cff1a226b4f1b4a5954cab691d4e5eb4b74ab699520770bfba723041e9dca"
     
     line_IDs = [34, 38, 64, 80, 54, 64, 71, 36, 60, 95, 59]
     poin_IDs = [1162, 1233, 1278, 1280, 1654, 1706, 1712, 1713, 1714, 1715,
@@ -26,7 +36,7 @@ def main():
         5611, 5612, 6112, 6432, 6433]
     
     def auth_request(url):
-        headers = {"Authorization": f"Bearer {TOKEN}"}
+        headers = {"Authorization": f"Bearer {token}"}
         response = requests.get(url, headers=headers)
         print("Status Code:", response.status_code)
         response.raise_for_status()
@@ -77,7 +87,8 @@ def main():
     # ------------------------------------------------------------------
     
     df = arrow_table.to_pandas()
-    df.to_parquet("combined_data.parquet")
+    combined_parquet = work_dir / "combined_data.parquet"
+    df.to_parquet(combined_parquet)
     
     line_ids_str = ",".join(f"'{i}'" for i in line_IDs)
     poin_ids_str = ",".join(f"'{i}'" for i in poin_IDs)
@@ -85,7 +96,7 @@ def main():
     con = duckdb.connect()
     results_df = con.execute(f"""WITH entries AS (   
             SELECT lineId,pointId,directionId,distanceFromPoint, (date AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Brussels')::timestamp as local_date
-            FROM read_parquet('combined_data.parquet')
+            FROM read_parquet('{combined_parquet.as_posix()}')
             WHERE lineId IN ({line_ids_str}) 
                 AND pointId IN ({poin_ids_str})
         ), filtered_entries AS (
@@ -133,12 +144,12 @@ def main():
     results_df = results_df.rename(columns={'agg': 'local_time'})
     
     # Produce both detailed and matrix outputs
-    last_csv = "Last_timestamp_STIB_buses_speeds.csv"
+    last_csv = work_dir / "Last_timestamp_STIB_buses_speeds.csv"
     results_df.to_csv(last_csv, index=False)
     
     
     # --- aggregate
-    segments = pd.read_csv("Etterbeek_STIB_segments.csv", sep=";")
+    segments = pd.read_csv(segments_csv, sep=";")
     
     segments["bus lines"] = (
         segments["bus lines"]
@@ -199,17 +210,12 @@ def main():
         .pivot(index="local_time", columns="ID_graph_edge", values="speed")
     )
     
-    # matrix_file = "STIB_speeds.csv"
-    # speed_matrix.to_csv(matrix_file)
-    
-    
     speed_long = speed_matrix.reset_index().melt(
         id_vars="local_time",
         var_name="SegmentID",
         value_name="Speed"
     )
     speed_long = speed_long.rename(columns={"local_time": "Time"})
-    speed_long.to_csv("STIB_speeds.csv", index=False)
-    
-    
-    
+    speeds_csv = work_dir / "STIB_speeds.csv"
+    speed_long.to_csv(speeds_csv, index=False)
+    return speeds_csv
