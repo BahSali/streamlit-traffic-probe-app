@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-import re
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any
@@ -12,6 +12,7 @@ import requests
 import streamlit as st
 
 from core import config
+from core.google_routes.usage_store import GcsUsageStore, UsageStoreError, describe_error, next_month_start
 from core.timing import timed
 
 
@@ -52,17 +53,11 @@ def get_google_sheet():
     return worksheet
 
 
-# Monthly usage worksheet (secrets [sheets]), header: month_key | request_count.
-# It is an append-only log: every Google batch appends one row with the
-# number of requests it reserves, and a month's usage is the sum of that
-# month's rows (an older single total row per month still counts).
-#
-# Why a log: Sheets has no transactions. With read-then-update, two users
-# pressing RUN together can both see room for their batch and both send
-# (tested: 11 requests sent with a limit of 10). Appends with INSERT_ROWS
-# get distinct rows, and a batch only counts the rows above its own, so
-# concurrent batches are ordered and at most one of them gets the last
-# requests. A denied batch sets its row to 0.
+# Monthly usage. The authoritative counter is core/google_routes/usage_store.py
+# (atomic reservations in Google Cloud Storage, secrets [google_usage_store]).
+# The older usage spreadsheet (secrets [sheets], month_key | request_count)
+# is only read, once per month, to start that month's counter from the value
+# it already holds; the app no longer writes to it.
 
 
 def configured_monthly_limit() -> int:
@@ -76,69 +71,76 @@ def _to_int(value: Any) -> int:
         return 0
 
 
-def _month_usage(values: list[list[Any]], month_key: str, before_row: int | None = None) -> int:
-    """Sum request_count of month_key rows (1-based sheet rows, header in row 1)."""
-    total = 0
-    last_row = len(values) if before_row is None else before_row - 1
-    for row_number in range(2, last_row + 1):
-        row = values[row_number - 1]
-        if len(row) >= 2 and str(row[0]).strip() == month_key:
-            total += _to_int(row[1])
-    return total
+def _month_usage(values: list[list[Any]], month_key: str) -> int:
+    """Sum request_count over month_key rows (header in row 1)."""
+    return sum(
+        _to_int(row[1])
+        for row in values[1:]
+        if len(row) >= 2 and str(row[0]).strip() == month_key
+    )
 
 
-def read_usage_state() -> dict[str, Any]:
-    """
-    Read this month's Google request usage (one sheet read, no write).
-    """
-    ws = get_google_sheet()
-    month_key = get_current_month_key()
-    return {
-        "month_key": month_key,
-        "request_count": _month_usage(ws.get_all_values(), month_key),
-    }
+def _secrets_section(name: str):
+    try:
+        return st.secrets[name]
+    except Exception:  # no secrets file, or no such section
+        return None
+
+
+def read_legacy_sheet_usage(month_key: str) -> int:
+    """This month's count in the older usage spreadsheet (read-only; 0 if not configured)."""
+    if _secrets_section("sheets") is None:
+        return 0
+    try:
+        with timed("google_sheets.read_count"):
+            return _month_usage(get_google_sheet().get_all_values(), month_key)
+    except Exception as exc:
+        raise UsageStoreError(
+            "the existing usage spreadsheet could not be read to start this month's counter "
+            f"({type(exc).__name__})"
+        ) from exc
+
+
+@st.cache_resource(show_spinner=False)
+def get_usage_store() -> GcsUsageStore:
+    settings = _secrets_section("google_usage_store")
+    account = _secrets_section("gcp_service_account")
+    if settings is None or "bucket" not in settings or account is None:
+        raise UsageStoreError("the usage store is not configured ([google_usage_store] bucket in secrets)")
+    from google.cloud import storage
+
+    client = storage.Client.from_service_account_info(dict(account))
+    return GcsUsageStore(
+        client.bucket(settings["bucket"]),
+        prefix=settings.get("prefix", "google-routes-usage"),
+        seed=read_legacy_sheet_usage,
+    )
 
 
 def get_monthly_google_request_count() -> int:
-    with timed("google_sheets.read_count"):
-        return int(read_usage_state()["request_count"])
+    """This month's authoritative usage; raises UsageStoreError when unavailable."""
+    with timed("google_usage.read"):
+        return get_usage_store().used(get_current_month_key())
 
 
-def _appended_row_number(response: dict[str, Any]) -> int:
-    updated_range = response["updates"]["updatedRange"]  # e.g. "'Usage'!A7:B7"
-    return int(re.search(r"![A-Z]+(\d+)", updated_range).group(1))
+def monthly_usage_or_none() -> int | None:
+    try:
+        return get_monthly_google_request_count()
+    except UsageStoreError:
+        return None
 
 
 def reserve_google_requests(planned: int, limit: int | None = None) -> dict[str, Any]:
-    """Reserve ``planned`` requests for this month before sending any.
-
-    Returns month_key, allowed, used_before (requests reserved by rows above
-    this one) and row (this reservation's sheet row).
-    """
+    """Atomically reserve planned requests (raises UsageStoreError if the store is unavailable)."""
     limit = configured_monthly_limit() if limit is None else int(limit)
-    ws = get_google_sheet()
-    month_key = get_current_month_key()
-
-    with timed("google_sheets.reserve", planned=planned):
-        response = ws.append_row(
-            [month_key, int(planned)],
-            value_input_option="RAW",
-            insert_data_option="INSERT_ROWS",
-        )
-        row = _appended_row_number(response)
-        used_before = _month_usage(ws.get_all_values(), month_key, before_row=row)
-        allowed = used_before + planned <= limit
-        if not allowed:
-            ws.update(f"B{row}", [[0]])
-
-    return {"month_key": month_key, "allowed": allowed, "used_before": used_before, "row": row}
+    with timed("google_usage.reserve", planned=planned):
+        return get_usage_store().reserve(get_current_month_key(), int(planned), limit)
 
 
-def record_attempted_requests(reservation: dict[str, Any], planned: int, attempted: int) -> None:
-    """Correct a reservation when fewer requests were attempted than planned."""
-    if attempted != planned:
-        with timed("google_sheets.write_count"):
-            get_google_sheet().update(f"B{reservation['row']}", [[int(attempted)]])
+def settle_google_requests(reservation: dict[str, Any], attempted: int) -> int:
+    """Record the attempted requests and release the rest; returns the month's usage."""
+    with timed("google_usage.settle", attempted=attempted):
+        return get_usage_store().settle(reservation, attempted)
 
 
 def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -426,7 +428,7 @@ def _diagnostics(
     *,
     month_key: str | None,
     limit: int,
-    used_before: int,
+    used_before: int | None,
     used_after: int | None = None,
     selected_segment_count: int = 0,
     group_count: int = 0,
@@ -438,6 +440,7 @@ def _diagnostics(
     info_message: str | None = None,
 ) -> dict[str, Any]:
     used_after = used_before if used_after is None else used_after
+    remaining = lambda used: None if used is None else int(limit) - int(used)  # noqa: E731
     return {
         "selected_segment_count": int(selected_segment_count),
         "group_count": int(group_count),
@@ -447,23 +450,26 @@ def _diagnostics(
         "failure_count": int(failure),
         "usage_month_key": month_key,
         "usage_monthly_limit": int(limit),
-        "usage_used_before_run": int(used_before),
-        "usage_remaining_before_run": int(limit) - int(used_before),
-        "usage_used_after_run": int(used_after),
-        "usage_remaining_after_run": int(limit) - int(used_after),
+        "usage_used_before_run": used_before,
+        "usage_remaining_before_run": remaining(used_before),
+        "usage_used_after_run": used_after,
+        "usage_remaining_after_run": remaining(used_after),
         "was_requested": sent > 0,
         "error_message": error_message,
         "info_message": info_message,
     }
 
 
+_UNKNOWN = object()
+
+
 def build_empty_google_result(
     message: str | None = None,
-    used_before_run: int | None = None,
+    used_before_run: Any = _UNKNOWN,
     error_message: str | None = None,
 ) -> dict[str, Any]:
-    if used_before_run is None:
-        used_before_run = get_monthly_google_request_count()
+    if used_before_run is _UNKNOWN:
+        used_before_run = monthly_usage_or_none()
 
     return {
         "google_results_df": pd.DataFrame(columns=GOOGLE_RESULT_COLUMNS),
@@ -482,7 +488,15 @@ def limit_exceeded_message(planned: int, used: int, limit: int, month_key: str) 
     return (
         f"Google Routes monthly limit reached: this RUN needs {planned} request(s), but "
         f"{used} of {limit} are already used in {month_key} (UTC), leaving {max(0, limit - used)}. "
-        "No Google request was sent."
+        f"The allowance resets on {next_month_start(month_key)} (UTC). No Google request was sent."
+    )
+
+
+def usage_unavailable_message(reason: str, limit: int, month_key: str, used: int | None) -> str:
+    used_text = f"{used} of {limit} used" if used is not None else f"usage unknown, limit {limit}"
+    return (
+        f"Google Routes usage could not be reserved: {reason}. No Google request was sent. "
+        f"Month {month_key} (UTC): {used_text}; the allowance resets on {next_month_start(month_key)} (UTC)."
     )
 
 
@@ -529,7 +543,16 @@ def fetch_google_speeds_for_selected_segments(
         )
 
     # Reserve the planned HTTP requests (one per group) before sending any.
-    reservation = reserve_google_requests(planned_request_count, limit=limit)
+    # No reservation, no request: an unavailable counter sends nothing.
+    try:
+        reservation = reserve_google_requests(planned_request_count, limit=limit)
+    except UsageStoreError as exc:
+        month_key = get_current_month_key()
+        used = monthly_usage_or_none()
+        return build_empty_google_result(
+            used_before_run=used,
+            error_message=usage_unavailable_message(describe_error(exc), limit, month_key, used),
+        )
     used_before_run = reservation["used_before"]
     month_key = reservation["month_key"]
 
@@ -548,22 +571,30 @@ def fetch_google_speeds_for_selected_segments(
 
     batch_started_at = datetime.now(timezone.utc)
 
-    # One request per group, sent concurrently; each group is requested exactly once.
-    with timed("google_routes.requests", requests=len(groups), segments=len(selected_segments_df)):
-        with ThreadPoolExecutor(max_workers=min(GOOGLE_ROUTES_MAX_PARALLEL, len(groups))) as executor:
-            responses = list(
-                executor.map(
-                    lambda group_df: send_google_route_request(
-                        api_key=api_key,
-                        body=build_google_request_body(group_df),
-                    ),
-                    groups,
-                )
-            )
+    # One request per group, sent concurrently; each group is requested exactly
+    # once. A request counts as attempted as soon as it starts, whether it then
+    # succeeds or fails; requests never started are given back.
+    attempted = 0
+    attempted_lock = threading.Lock()
 
-    # Every request was attempted (failures included) and counts toward the limit.
-    attempted = len(responses)
-    record_attempted_requests(reservation, planned_request_count, attempted)
+    def send(group_df: pd.DataFrame):
+        nonlocal attempted
+        body = build_google_request_body(group_df)
+        with attempted_lock:
+            attempted += 1
+        return send_google_route_request(api_key=api_key, body=body)
+
+    used_after_run = used_before_run + planned_request_count
+    try:
+        with timed("google_routes.requests", requests=len(groups), segments=len(selected_segments_df)):
+            with ThreadPoolExecutor(max_workers=min(GOOGLE_ROUTES_MAX_PARALLEL, len(groups))) as executor:
+                responses = list(executor.map(send, groups))
+    finally:
+        try:
+            used_after_run = settle_google_requests(reservation, attempted)
+        except UsageStoreError:
+            # The full reservation stays counted: usage may be overstated, never understated.
+            pass
 
     failure_count = sum(1 for _, error_message in responses if error_message)
     success_count = attempted - failure_count
@@ -598,7 +629,7 @@ def fetch_google_speeds_for_selected_segments(
             month_key=month_key,
             limit=limit,
             used_before=used_before_run,
-            used_after=used_before_run + attempted,
+            used_after=used_after_run,
             selected_segment_count=len(selected_segments_df),
             group_count=len(groups),
             planned=planned_request_count,

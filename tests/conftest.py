@@ -129,6 +129,16 @@ def offline(monkeypatch):
     st.cache_data.clear()
     import cities.brussels.session as session
     from core.google_routes import observations
+    from core.google_routes.usage_store import GcsUsageStore
+    from tests.fake_gcs import MemoryBucket
+
+    # Authoritative counter on a fake GCS bucket; a new month starts from the
+    # (fake) legacy usage sheet, read-only, as in production.
+    bucket = MemoryBucket()
+    store = GcsUsageStore(bucket, seed=lambda month: google._month_usage(sheet.get_all_values(), month))
+    monkeypatch.setattr(google, "get_usage_store", lambda: store)
+    record["usage_store"] = store
+    record["usage_bucket"] = bucket
 
     observations.ensure_header(observation_sheet)
     monkeypatch.setattr(session, "_observation_worksheet", lambda: observation_sheet)

@@ -23,6 +23,10 @@ Worksheet (row 1 is the header)::
   the map). A value Google did not return is left empty.
 - Retries are idempotent: a batch whose batch_id is already present is not
   written again, and rows are never updated.
+
+Recording is not lossless: a batch that cannot be written stays queued in the
+browser session that ran it and is retried on each rerun; it is lost if that
+session ends or the app restarts before a write succeeds.
 """
 from __future__ import annotations
 
@@ -36,6 +40,10 @@ from typing import Any
 import pandas as pd
 
 logger = logging.getLogger("estimator.observations")
+
+
+class ObservationStoreError(RuntimeError):
+    """The observation log could not be written; the message is safe to show."""
 
 HEADER = ["batch_id", "batch_timestamp_utc", "segment_id", "distance_m", "duration_s", "speed_kmh"]
 QUANTITIES = ["distance_m", "duration_s", "speed_kmh"]
@@ -88,15 +96,34 @@ def ensure_header(worksheet) -> None:
     if not current:
         worksheet.append_row(HEADER, value_input_option="RAW")
     elif current[: len(HEADER)] != HEADER:
-        raise ValueError(f"Unexpected observation worksheet header: {current}")
+        raise ObservationStoreError(
+            "the observation worksheet's first row is not the expected header; "
+            "use a blank worksheet (the app writes the header)"
+        )
 
 
-def persist_batch(worksheet, batch: dict[str, Any], attempts: int = 3, backoff_seconds: float = 1.0) -> bool:
-    """Append the batch unless it is already stored. Returns True once stored."""
+def describe_error(exc: BaseException) -> str:
+    """A short, credential-free reason for a failed observation write."""
+    if isinstance(exc, ObservationStoreError):
+        return str(exc)
+    name = type(exc).__name__
+    if name == "SpreadsheetNotFound":
+        return "the observation spreadsheet was not found or is not shared with the service account"
+    if name == "WorksheetNotFound":
+        return "the worksheet named in [google_observations] worksheet_name does not exist"
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status is not None:
+        return f"Google Sheets API error (HTTP {status})"
+    return f"{name} while writing to Google Sheets"
+
+
+def persist_batch(worksheet, batch: dict[str, Any], attempts: int = 2, backoff_seconds: float = 0.5) -> None:
+    """Append the batch unless it is already stored; raises ObservationStoreError if it cannot."""
+    last_error: BaseException | None = None
     for attempt in range(1, attempts + 1):
         try:
             if batch["batch_id"] in worksheet.col_values(1):
-                return True
+                return
             worksheet.append_rows(
                 batch_rows(batch),
                 value_input_option="RAW",
@@ -107,15 +134,16 @@ def persist_batch(worksheet, batch: dict[str, Any], attempts: int = 3, backoff_s
                 batch["batch_id"],
                 len(batch["observations"]),
             )
-            return True
+            return
         except Exception as exc:  # network or API error: retry, the id check prevents duplicates
+            last_error = exc
             logger.warning(
                 "storing observation batch %s failed (attempt %d/%d): %s",
                 batch["batch_id"], attempt, attempts, type(exc).__name__,
             )
             if attempt < attempts:
                 time.sleep(backoff_seconds * attempt)
-    return False
+    raise ObservationStoreError(describe_error(last_error))
 
 
 def read_observations(worksheet) -> pd.DataFrame:
@@ -167,16 +195,35 @@ def write_exports(exports: dict[str, pd.DataFrame], out_dir: Path) -> list[Path]
 
 
 def get_observation_worksheet():
-    """The private observation worksheet, or None when it is not configured."""
+    """The private observation worksheet; raises ObservationStoreError when unusable."""
     import gspread
     import streamlit as st
 
+    def section(name):
+        try:
+            return st.secrets[name]
+        except Exception:  # no secrets file, or no such section
+            return None
+
+    settings = section("google_observations")
+    account = section("gcp_service_account")
+    if settings is None or not settings.get("spreadsheet_id"):
+        raise ObservationStoreError("[google_observations] spreadsheet_id is missing from the app's secrets")
+    if account is None:
+        raise ObservationStoreError("[gcp_service_account] is missing from the app's secrets")
+    usage = section("sheets")
+    if usage is not None and usage.get("spreadsheet_id") == settings["spreadsheet_id"]:
+        raise ObservationStoreError(
+            "[google_observations] points to the monthly usage spreadsheet; use the separate private spreadsheet"
+        )
     try:
-        config = st.secrets["google_observations"]
-        account = dict(st.secrets["gcp_service_account"])
-    except Exception:  # no secrets file, or no [google_observations] section
-        return None
-    return _open_worksheet(account, config["spreadsheet_id"], config.get("worksheet_name", "observations"), gspread)
+        return _open_worksheet(
+            dict(account), settings["spreadsheet_id"], settings.get("worksheet_name", "observations"), gspread
+        )
+    except ObservationStoreError:
+        raise
+    except Exception as exc:
+        raise ObservationStoreError(describe_error(exc)) from exc
 
 
 def _open_worksheet(account: dict, spreadsheet_id: str, worksheet_name: str, gspread_module):

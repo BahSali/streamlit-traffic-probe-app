@@ -20,8 +20,9 @@ secrets settings. `MOBILITY_TWIN_TOKEN` can also be an environment variable.
 | --- | --- |
 | `MOBILITY_TWIN_TOKEN` | Brussels live/historical STIB data; Ixelles-Etterbeek pipeline runs |
 | `GOOGLE_MAPS_API_KEY` (or `GOOGLE_ROUTES_API_KEY`) | Brussels Google Routes speeds (paid API) |
-| `gcp_service_account`, `sheets.spreadsheet_id`, `sheets.worksheet_name` | Brussels monthly Google request counter (Google Sheet) |
-| `google_observations.spreadsheet_id`, `google_observations.worksheet_name` | Private log of Google Routes observations (see below); optional |
+| `gcp_service_account`, `sheets.spreadsheet_id`, `sheets.worksheet_name` | Service account; the older usage spreadsheet (read only, to start a month's count) |
+| `google_usage_store.bucket` | Authoritative monthly Google request counter (GCS); without it no Google request is sent |
+| `google_observations.spreadsheet_id`, `google_observations.worksheet_name` | Private log of Google Routes observations (see below) |
 
 ## Project layout
 
@@ -117,7 +118,7 @@ timing mobilitytwin.historical_request 0.607s caller=model window_start=... file
 timing brussels.run_update 9.946s
 ```
 
-Main stages: `google_sheets.read_count` / `reserve` / `write_count`, `google_observations.store`,
+Main stages: `google_usage.read` / `reserve` / `settle`, `google_observations.store`,
 `google_routes.requests`, `mobilitytwin.live_request`,
 `mobilitytwin.historical_request` (per window, with file and row counts),
 `brussels.live_bus_speeds`, `brussels.import_model`, `model.history_features`,
@@ -127,30 +128,52 @@ environment variable `ESTIMATOR_TIMING_LOG=0` to turn them off.
 
 ## Google Routes: monthly limit and private observation log
 
-### Monthly request limit
+### Monthly request limit (strict)
 
 **Setting:** `GOOGLE_ROUTES_MONTHLY_LIMIT` in [`core/config.py`](core/config.py)
 (default 5000; set e.g. 10 to test). Overview ("Google used" / "Google left")
-and the diagnostics line use this value.
+and the diagnostics line show the authoritative counter against this value.
 
-Usage is kept in the existing worksheet (`[sheets]`, header
-`month_key | request_count`, month in UTC as `YYYY-MM`). It is an append-only
-log: each RUN that needs Google adds one row reserving its planned HTTP
-requests (one per group of adjacent segments, not one per segment), and a
-month's usage is the **sum** of that month's rows. An existing single total
-row per month keeps counting. To correct the usage, add a row with the
-difference.
+**Where the count lives.** Google Sheets cannot enforce a limit across
+simultaneous users or app instances: it has no transactions or conditional
+writes, so "read the count, then write" lets two RUNs both pass the check.
+The authoritative counter is therefore one small JSON object per month in a
+**Google Cloud Storage** bucket (`gs://<bucket>/google-routes-usage/<YYYY-MM>.json`,
+months in UTC). Every change is a compare-and-swap: the app reads the object
+and its generation and writes back with `ifGenerationMatch`; GCS rejects the
+write if anything changed in between, and the app retries from a fresh read
+(see [`core/google_routes/usage_store.py`](core/google_routes/usage_store.py)).
 
-- A RUN is checked before anything is sent: if its planned requests do not
-  fit in what is left, nothing is sent, its row is set to 0, and the page
-  shows the usage, the limit and the month.
-- Every attempted request counts, including failed ones. Google results
-  reused from the same selection within 90 s send and count nothing.
-- Two users pressing RUN at the same moment: each reservation is appended as
-  its own row (`INSERT_ROWS`) and only the rows above it count, so both
-  cannot take the last requests. This relies on Google Sheets applying
-  appends one after the other. If the sheet write fails after a reservation,
-  that reservation still counts, so the error is on the safe side.
+- Before any Google Routes request, a RUN atomically reserves its planned
+  HTTP requests (one per group of adjacent segments, not one per segment).
+  If they do not fit, nothing is sent and the page shows the usage, the
+  limit, the month and the reset date (1st of next month, UTC).
+- If the counter cannot be reached or is not configured, **no Google request
+  is sent** and the page says why.
+- A request counts as soon as it starts, whether it succeeds or fails.
+  Requests of a batch that never start (e.g. after an error) are given back.
+  If the app dies mid-batch the whole reservation stays counted: usage can be
+  overstated, never understated.
+- Results reused from the same selection within 90 s use no allowance.
+- The first RUN of a month starts that month's counter from the value in the
+  existing usage spreadsheet (`[sheets]`), **read-only**. The app no longer
+  writes to that spreadsheet.
+
+**Setup** (once, in a Google Cloud project with billing enabled):
+
+1. Create a bucket (e.g. `my-app-google-usage`, Standard class, uniform
+   access, public access prevention on).
+2. Grant the service account from `[gcp_service_account]` the role
+   **Storage Object User** on that bucket only.
+3. Add to the app's secrets:
+
+   ```toml
+   [google_usage_store]
+   bucket = "my-app-google-usage"
+   ```
+
+To correct a month's count, edit `used` in that month's object in the Cloud
+Console (the app picks up the change on its next read).
 
 ### Private observation log
 
@@ -169,8 +192,8 @@ committed. Setup:
    worksheet_name = "observations"
    ```
 
-   Without this section the app works as before and stores nothing (a
-   warning is logged).
+   The app writes the header row into the blank worksheet on first use. It
+   refuses to write observations into the monthly usage spreadsheet.
 
 Each RUN that actually sends Google requests appends one batch in a single
 call: `batch_id | batch_timestamp_utc | segment_id | distance_m | duration_s |
@@ -184,8 +207,13 @@ batch; then one row per segment for which Google returned a value.
   (a 0 s leg shorter than 20 m is treated as 1 s). Missing values stay empty.
 - Reused Google results and RUNs blocked by the limit add nothing.
 - Writes are retried; a batch already present (same `batch_id`) is never
-  written again and rows are never updated. A write that failed is retried
-  on the next rerun of the page.
+  written again and rows are never updated.
+- **Recording is not lossless.** If the configuration is missing, the sheet
+  cannot be opened, or a write fails, RUN still completes and the page shows
+  a red "Google observations NOT saved" message naming each batch (id and
+  time) and the reason. The batch stays queued in that browser session and is
+  retried on every rerun; it is lost if the session ends or the app restarts
+  before a write succeeds.
 
 **Exports** (only with the credentials, from your own machine):
 

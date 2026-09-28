@@ -28,6 +28,7 @@ from cities.brussels.session import (
     on_run_clicked,
     reusable_google_age_seconds,
     selected_segment_count,
+    unsaved_observation_batches,
 )
 from cities.brussels.speed_layers import build_idle_payload, build_run_payload
 from cities.brussels.synced_maps import build_three_map_html
@@ -54,6 +55,10 @@ def reorder_columns(df: pd.DataFrame, priority_cols: list[str]) -> pd.DataFrame:
     existing_priority = [col for col in priority_cols if col in df.columns]
     remaining_cols = [col for col in df.columns if col not in existing_priority]
     return df[existing_priority + remaining_cols]
+
+
+def _or_na(value) -> str:
+    return "N/A" if value is None else str(value)
 
 
 def render_diagnostics(payload: dict, google_diagnostics: dict) -> None:
@@ -100,8 +105,8 @@ def render_diagnostics(payload: dict, google_diagnostics: dict) -> None:
             f"sent requests: {google_diagnostics.get('request_count_sent', 0)}, "
             f"success: {google_diagnostics.get('success_count', 0)}, "
             f"failure: {google_diagnostics.get('failure_count', 0)}, "
-            f"monthly used after run: {google_diagnostics.get('usage_used_after_run', 0)}, "
-            f"monthly remaining: {google_diagnostics.get('usage_remaining_after_run', 0)}, "
+            f"monthly used after run: {_or_na(google_diagnostics.get('usage_used_after_run'))}, "
+            f"monthly remaining: {_or_na(google_diagnostics.get('usage_remaining_after_run'))}, "
             f"monthly limit: {google_diagnostics.get('usage_monthly_limit', configured_monthly_limit())}"
         )
 
@@ -158,17 +163,34 @@ def render_content(slots: dict, payload: dict) -> None:
                 use_container_width=False,
             )
 
-    google_used = google_diagnostics.get("usage_used_after_run", 0)
-    google_remaining = google_diagnostics.get(
-        "usage_remaining_after_run",
-        configured_monthly_limit() - google_used,
-    )
+    # Authoritative monthly usage (core/google_routes/usage_store.py); None = unavailable.
+    google_used = google_diagnostics.get("usage_used_after_run")
+    google_remaining = google_diagnostics.get("usage_remaining_after_run")
     with slots["overview"].container():
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Google used", google_used)
-        col2.metric("Google left", google_remaining)
+        col1.metric("Google used", "N/A" if google_used is None else google_used)
+        col2.metric("Google left", "N/A" if google_remaining is None else google_remaining)
         col3.metric("Google segments", payload["selected_google_count"])
         col4.metric("STIB live", payload["live_bus_count"])
+
+
+def render_unsaved_observations(slot) -> None:
+    """Warn about Google observation batches that could not be saved (never silently dropped)."""
+    batches = unsaved_observation_batches()
+    if not batches:
+        slot.empty()
+        return
+    lines = "\n".join(
+        f"- batch `{b['batch_id']}` sent {b['batch_timestamp_utc']} "
+        f"({len(b['observations'])} segments): {b.get('last_error') or 'not saved yet'}"
+        for b in batches
+    )
+    slot.error(
+        f"**Google observations NOT saved ({len(batches)} batch(es)).**\n\n{lines}\n\n"
+        "RUN, the maps and the results are not affected. Saving is retried on every rerun "
+        "while this browser session stays open; these observations are lost if the session "
+        "ends or the app restarts before they are saved."
+    )
 
 
 def run_update(status) -> dict:
@@ -224,6 +246,7 @@ brussels_left_controls(
 )
 with settings_box:
     status_slot = st.empty()
+    observation_warning_slot = st.empty()
 
 with content_box:
     page_header("Brussels", PAGE_CAPTION)
@@ -264,3 +287,5 @@ if st.session_state["brussels_run_requested"]:
         status_slot.caption(f"Maps last updated at {payload['updated_at']:%H:%M:%S} (Brussels time).")
 elif previous_payload:
     status_slot.caption(f"Maps last updated at {previous_payload['updated_at']:%H:%M:%S} (Brussels time).")
+
+render_unsaved_observations(observation_warning_slot)

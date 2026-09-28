@@ -13,3 +13,4 @@ google-auth
 altair
 pyarrow
 requests
+google-cloud-storage

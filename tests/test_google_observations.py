@@ -3,7 +3,9 @@ import re
 from datetime import datetime
 
 import pandas as pd
+import pytest
 
+import cities.brussels.session as session
 import core.google_routes.service as google
 from core.google_routes import observations
 from scripts import export_google_observations as export_script
@@ -76,26 +78,64 @@ def test_retries_are_idempotent_and_never_overwrite():
             raise ConnectionError("response lost")
 
     sheet.append_rows = append_then_fail
-    assert observations.persist_batch(sheet, batch, backoff_seconds=0)
-    assert observations.persist_batch(sheet, batch, backoff_seconds=0)  # a later retry
+    observations.persist_batch(sheet, batch, backoff_seconds=0)
+    observations.persist_batch(sheet, batch, backoff_seconds=0)  # a later retry
     df = stored(sheet)
     assert (df["batch_id"] == batch["batch_id"]).sum() == 3  # marker + 2 segments, once
     assert calls["n"] == 1
 
 
-def test_a_failed_write_is_retried_on_the_next_rerun(offline, monkeypatch):
+def unsaved_warning(at) -> str:
+    return " ".join(e.value for e in at.error if "Google observations NOT saved" in e.value)
+
+
+def test_a_failed_write_is_reported_kept_and_retried(offline, monkeypatch):
     sheet = offline["observation_sheet"]
     real_append = sheet.append_rows
     monkeypatch.setattr(observations.time, "sleep", lambda s: None)
     sheet.append_rows = lambda rows, **kw: (_ for _ in ()).throw(ConnectionError("offline"))
     at = run(app("pages/Brussels.py").run(), bus_ids=["12"])
+
+    # RUN completed with Google data, and the failure is reported, naming the batch.
+    assert offline["google_requests"] > 0
+    assert any(m.label == "Google segments" and m.value != "0" for m in at.metric)
+    [pending] = at.session_state["brussels_pending_observation_batches"]
+    text = unsaved_warning(at)
+    assert pending["batch_id"] in text and pending["batch_timestamp_utc"] in text
+    assert "ConnectionError while writing to Google Sheets" in text and "lost if the session ends" in text
     assert stored(sheet).empty
-    assert len(at.session_state["brussels_pending_observation_batches"]) == 1
 
     sheet.append_rows = real_append
-    at.run()  # any rerun flushes the queue
-    assert stored(sheet)["batch_id"].nunique() == 1
+    at.run()  # any rerun retries; the batch is stored once
+    assert stored(sheet)["batch_id"].unique().tolist() == [pending["batch_id"]]
     assert at.session_state["brussels_pending_observation_batches"] == []
+    assert unsaved_warning(at) == ""
+
+
+def test_missing_configuration_keeps_the_batch_and_says_so(offline, monkeypatch):
+    def not_configured():
+        raise observations.ObservationStoreError(
+            "[google_observations] spreadsheet_id is missing from the app's secrets"
+        )
+
+    monkeypatch.setattr(session, "_observation_worksheet", not_configured)
+    at = run(app("pages/Brussels.py").run(), bus_ids=["12"])
+    assert offline["google_requests"] > 0  # RUN still used Google
+    assert len(at.session_state["brussels_pending_observation_batches"]) == 1
+    assert "spreadsheet_id is missing" in unsaved_warning(at)
+
+
+def test_the_usage_spreadsheet_is_refused_as_observation_target(monkeypatch):
+    import streamlit as st
+
+    fake_secrets = {
+        "google_observations": {"spreadsheet_id": "same-id", "worksheet_name": "observations"},
+        "sheets": {"spreadsheet_id": "same-id", "worksheet_name": "usage"},
+        "gcp_service_account": {"type": "fake"},
+    }
+    monkeypatch.setattr(st, "secrets", fake_secrets)
+    with pytest.raises(observations.ObservationStoreError, match="monthly usage spreadsheet"):
+        observations.get_observation_worksheet()
 
 
 def test_exports_are_aligned_wide_tables():

@@ -24,7 +24,7 @@ from core.google_routes import observations
 from core.google_routes.service import (
     configured_monthly_limit,
     fetch_google_speeds_for_selected_segments,
-    get_monthly_google_request_count,
+    monthly_usage_or_none,
 )
 
 logger = logging.getLogger("estimator.observations")
@@ -38,9 +38,10 @@ def empty_google_results_df() -> pd.DataFrame:
     return pd.DataFrame(columns=["segment_id", "google_speed_kmh", "google_duration_seconds"])
 
 
-def idle_google_diagnostics(used_count: int, error_message: str | None = None) -> dict:
-    """Google diagnostics when no request was sent in this run."""
+def idle_google_diagnostics(used_count: int | None, error_message: str | None = None) -> dict:
+    """Google diagnostics when no request was sent in this run (used_count None = unknown)."""
     limit = configured_monthly_limit()
+    remaining = None if used_count is None else limit - used_count
     return {
         "selected_segment_count": 0,
         "group_count": 0,
@@ -51,9 +52,9 @@ def idle_google_diagnostics(used_count: int, error_message: str | None = None) -
         "usage_month_key": None,
         "usage_monthly_limit": limit,
         "usage_used_before_run": used_count,
-        "usage_remaining_before_run": limit - used_count,
+        "usage_remaining_before_run": remaining,
         "usage_used_after_run": used_count,
-        "usage_remaining_after_run": limit - used_count,
+        "usage_remaining_after_run": remaining,
         "was_requested": False,
         "error_message": error_message,
         "info_message": None,
@@ -82,9 +83,7 @@ def init_session_state() -> None:
         st.session_state["brussels_google_results_df"] = empty_google_results_df()
 
     if "brussels_google_diagnostics" not in st.session_state:
-        st.session_state["brussels_google_diagnostics"] = idle_google_diagnostics(
-            get_monthly_google_request_count()
-        )
+        st.session_state["brussels_google_diagnostics"] = idle_google_diagnostics(monthly_usage_or_none())
 
 
 def on_run_clicked() -> None:
@@ -100,7 +99,7 @@ def on_run_clicked() -> None:
 def on_reset_clicked() -> None:
     """Reset callback: back to the uncoloured network."""
     state = st.session_state
-    used_count = state["brussels_google_diagnostics"].get("usage_used_after_run", 0)
+    used_count = state["brussels_google_diagnostics"].get("usage_used_after_run")
     state["brussels_colorized"] = False
     state["brussels_applied_segment_names"] = []
     state["brussels_applied_bus_ids"] = []
@@ -146,7 +145,7 @@ def fetch_google_speeds() -> None:
         st.session_state["brussels_google_diagnostics"] = diagnostics
         return
 
-    used_before_run = st.session_state["brussels_google_diagnostics"].get("usage_used_after_run", 0)
+    used_before_run = st.session_state["brussels_google_diagnostics"].get("usage_used_after_run")
 
     try:
         gdf = load_brussels_map().copy()
@@ -184,26 +183,33 @@ def fetch_google_speeds() -> None:
 
 @st.cache_resource(show_spinner=False)
 def _observation_worksheet():
+    # Only a working worksheet is cached; a failure raises and is retried next time.
     return observations.get_observation_worksheet()
 
 
 def flush_observation_batches() -> None:
-    """Store queued observation batches in the private log (idempotent)."""
+    """Try to store every queued observation batch; failed ones stay queued with a reason."""
     pending = st.session_state.get("brussels_pending_observation_batches") or []
     if not pending:
         return
     try:
         worksheet = _observation_worksheet()
     except Exception as exc:
-        logger.warning("observation worksheet unavailable: %s", type(exc).__name__)
+        reason = observations.describe_error(exc)
+        for batch in pending:
+            batch["last_error"] = reason
+        logger.warning("observation log unavailable (%d batch(es) queued): %s", len(pending), reason)
         return
-    if worksheet is None:
-        logger.warning(
-            "[google_observations] is not configured; %d observation batch(es) not stored",
-            len(pending),
-        )
-        st.session_state["brussels_pending_observation_batches"] = []
-        return
-    st.session_state["brussels_pending_observation_batches"] = [
-        batch for batch in pending if not observations.persist_batch(worksheet, batch)
-    ]
+
+    still_pending = []
+    for batch in pending:
+        try:
+            observations.persist_batch(worksheet, batch)
+        except observations.ObservationStoreError as exc:
+            batch["last_error"] = str(exc)
+            still_pending.append(batch)
+    st.session_state["brussels_pending_observation_batches"] = still_pending
+
+
+def unsaved_observation_batches() -> list[dict]:
+    return list(st.session_state.get("brussels_pending_observation_batches") or [])
