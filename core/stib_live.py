@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from functools import lru_cache
+
 from collections.abc import Iterable
 
 import geopandas as gpd
 import pandas as pd
 import requests
+
+from core.timing import timed
 
 
 LIVE_SPEED_URL = "https://api.mobilitytwin.brussels/stib/aggregated-speed"
@@ -142,6 +146,12 @@ def standardize_live_speed_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_segment_metadata_from_gpkg(gpkg_path: str) -> pd.DataFrame:
+    """Segment metadata from the (static) GPKG file, read once per process."""
+    return _read_segment_metadata(str(gpkg_path)).copy()
+
+
+@lru_cache(maxsize=4)
+def _read_segment_metadata(gpkg_path: str) -> pd.DataFrame:
     """
     Load segment metadata directly from the GPKG file.
 
@@ -235,11 +245,13 @@ def fetch_live_segment_speeds(
         - segment_snapshot
         - live_point_speeds
     """
-    payload = auth_get_json(LIVE_SPEED_URL, token)
+    with timed("mobilitytwin.live_request"):
+        payload = auth_get_json(LIVE_SPEED_URL, token)
     raw_df = flatten_json_payload(payload)
     standardized_df = standardize_live_speed_columns(raw_df)
 
-    segment_metadata = load_segment_metadata_from_gpkg(gpkg_path)
+    with timed("gpkg.read_segment_metadata", caller="stib_live"):
+        segment_metadata = load_segment_metadata_from_gpkg(gpkg_path)
     segment_snapshot = build_segment_speed_snapshot(
         standardized_df,
         segment_metadata,

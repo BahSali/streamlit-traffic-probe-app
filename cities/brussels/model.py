@@ -1,10 +1,14 @@
+"""Brussels speed-estimation model: loads the checkpoint in models/ and runs
+inference on the recent STIB history (MobilityTwin). Used by speed_layers.py."""
 from __future__ import annotations
 
+import threading
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import duckdb
 import geopandas as gpd
@@ -17,6 +21,10 @@ import streamlit as st
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from core.config import MODELS_DIR
+from core.stib_historical import ping_time_range_utc
+from core.timing import timed
 
 
 BRUSSELS_TIMEZONE = "Europe/Brussels"
@@ -232,12 +240,32 @@ def get_snapshot_timestamp(completed_snapshot_df: pd.DataFrame) -> pd.Timestamp 
     return None if pd.isna(value) else value
 
 
+def brussels_local_to_epoch_seconds(value: pd.Timestamp, *, window_end: bool) -> float:
+    """Epoch seconds (UTC) for a Brussels local time.
+
+    Snapshot and bucket times in this module are naive Brussels local times
+    (see core/stib_live.py). ``Timestamp.timestamp()`` would read a naive
+    value as UTC, shifting the window by the UTC offset (1 h in winter, 2 h in
+    summer). In the repeated hour at the end of summer time, a window start
+    takes the earlier instant and a window end the later one, so the window
+    covers both; times skipped at the start of summer time move forward.
+    """
+    local = pd.Timestamp(value)
+    if local.tzinfo is None:
+        local = local.tz_localize(
+            BRUSSELS_TIMEZONE,
+            ambiguous=not window_end,  # True = summer time = the earlier instant
+            nonexistent="shift_forward",
+        )
+    return float(local.tz_convert("UTC").timestamp())
+
+
 def floor_to_15_minutes(value: pd.Timestamp) -> pd.Timestamp:
     return pd.Timestamp(value).floor(f"{PARQUET_BUCKET_MINUTES}min")
 
 
 def resolve_checkpoint_path() -> Path:
-    return Path(__file__).resolve().parent / "cnn_trained model.pt"
+    return MODELS_DIR / "cnn_trained model.pt"
 
 
 def load_checkpoint(path: Path) -> tuple[dict[str, Any], str]:
@@ -472,34 +500,139 @@ def download_and_concatenate_parquets(url_list: list[str]) -> pa.Table:
     return pa.concat_tables(ordered_tables, promote_options="default")
 
 
-@st.cache_data(show_spinner=False, ttl=300)
+# History windows that ended this long ago no longer change, so they are
+# cached for hours; recent windows keep the short cache.
+PAST_WINDOW_MIN_AGE = pd.Timedelta(hours=2)
+RECENT_WINDOW_TTL_SECONDS = 300
+PAST_WINDOW_TTL_SECONDS = 6 * 3600
+EMPTY_WINDOW_COLUMNS = ["local_time", "lineId", "pointId", "speed"]
+
+
 def fetch_raw_bucket_speeds(
     token: str,
     window_start_iso: str,
     window_end_iso: str,
 ) -> pd.DataFrame:
+    """Bus speeds per (15-min bucket, line, stop) for one window (Brussels local time).
+
+    Only buckets inside [window_start, window_end) are returned: the callers
+    keep only buckets of the window, and a whole-day file would otherwise be
+    cached again for every window.
+    """
+    now_local = pd.Timestamp.now(tz=BRUSSELS_TIMEZONE).tz_localize(None)
+    if pd.Timestamp(window_end_iso) < now_local - PAST_WINDOW_MIN_AGE:
+        return _fetch_past_window_speeds(token, window_start_iso, window_end_iso)
+    return _fetch_recent_window_speeds(token, window_start_iso, window_end_iso)
+
+
+@st.cache_data(show_spinner=False, ttl=RECENT_WINDOW_TTL_SECONDS)
+def _fetch_recent_window_speeds(token: str, window_start_iso: str, window_end_iso: str) -> pd.DataFrame:
+    return _download_window_speeds(token, window_start_iso, window_end_iso, reuse_files=False)
+
+
+@st.cache_data(show_spinner=False, ttl=PAST_WINDOW_TTL_SECONDS, max_entries=64)
+def _fetch_past_window_speeds(token: str, window_start_iso: str, window_end_iso: str) -> pd.DataFrame:
+    return _download_window_speeds(token, window_start_iso, window_end_iso, reuse_files=True)
+
+
+# Query parameters that sign or expire a download link. They change on every
+# request for the same file and never tell two files apart, so they are left
+# out of a file's identity.
+_SIGNATURE_PARAMS = {
+    "signature", "expires", "key-pair-id", "policy", "token", "sig", "se", "st", "sp", "sv", "sr",
+    "skoid", "sktid", "skt", "ske", "sks", "skv", "googleaccessid",
+}
+_SIGNATURE_PREFIXES = ("x-amz-", "x-goog-", "x-ms-")
+
+
+def file_identity(url: str) -> str:
+    """A download URL without its signature/expiry parameters."""
+    parts = urlsplit(url)
+    kept = sorted(
+        (key, value)
+        for key, value in parse_qsl(parts.query, keep_blank_values=True)
+        if key.lower() not in _SIGNATURE_PARAMS and not key.lower().startswith(_SIGNATURE_PREFIXES)
+    )
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(kept), ""))
+
+
+_file_cache_state = threading.local()
+
+
+@st.cache_data(show_spinner=False, ttl=PAST_WINDOW_TTL_SECONDS, max_entries=8)
+def _speeds_from_past_files(file_key: tuple[str, ...], _urls: tuple[str, ...]):
+    """_speeds_from_files, cached per set of files (older data does not change).
+
+    MobilityTwin returns one whole-day file for any window on an older day, so
+    every window of that day now reuses one download and one query. The key is
+    the files' identities; _urls (not hashed) are the current download links.
+    """
+    _file_cache_state.computed = True
+    return _speeds_from_files(list(_urls))
+
+
+def _speeds_from_files(parquet_urls: list[str]):
+    """(speeds per bucket for every ping in the files, (first, last) ping UTC or None)."""
+    arrow_table = download_and_concatenate_parquets(parquet_urls)
+    return _aggregate_bucket_speeds(arrow_table), ping_time_range_utc(arrow_table)
+
+
+def _download_window_speeds(
+    token: str,
+    window_start_iso: str,
+    window_end_iso: str,
+    reuse_files: bool = False,
+) -> pd.DataFrame:
     window_start = pd.Timestamp(window_start_iso)
     window_end = pd.Timestamp(window_end_iso)
 
-    start_ts = float(window_start.timestamp())
-    end_ts = float(window_end.timestamp())
+    start_ts = brussels_local_to_epoch_seconds(window_start, window_end=False)
+    end_ts = brussels_local_to_epoch_seconds(window_end, window_end=True)
 
-    response = auth_request(
-        (
-            "https://api.mobilitytwin.brussels/parquetized"
-            f"?start_timestamp={start_ts}"
-            f"&end_timestamp={end_ts}"
-            f"&component={PARQUET_COMPONENT}"
-        ),
-        token=token,
-    )
+    with timed("mobilitytwin.historical_request", caller="model", window_start=window_start_iso) as log:
+        response = auth_request(
+            (
+                "https://api.mobilitytwin.brussels/parquetized"
+                f"?start_timestamp={start_ts}"
+                f"&end_timestamp={end_ts}"
+                f"&component={PARQUET_COMPONENT}"
+            ),
+            token=token,
+        )
 
-    parquet_urls = response.get("results", [])
-    if not parquet_urls:
-        return pd.DataFrame(columns=["local_time", "lineId", "pointId", "speed"])
+        parquet_urls = response.get("results", [])
+        log["files"] = len(parquet_urls)
+        if not parquet_urls:
+            return pd.DataFrame(columns=EMPTY_WINDOW_COLUMNS)
 
-    arrow_table = download_and_concatenate_parquets(parquet_urls)
+        if reuse_files:
+            _file_cache_state.computed = False
+            df, pings = _speeds_from_past_files(
+                tuple(file_identity(url) for url in parquet_urls), tuple(parquet_urls)
+            )
+            log["file_cache"] = "miss" if _file_cache_state.computed else "hit"
+        else:
+            df, pings = _speeds_from_files(parquet_urls)
 
+        # Requested vs returned ping times: shows whether the end of a window is
+        # empty because MobilityTwin has not published those pings yet.
+        log["requested_utc"] = (
+            f"{pd.Timestamp(start_ts, unit='s'):%H:%M}-{pd.Timestamp(end_ts, unit='s'):%H:%M}"
+        )
+        if pings is not None:
+            log["pings_utc"] = f"{pings[0]:%H:%M}-{pings[1]:%H:%M}"
+            log["empty_minutes_at_window_end"] = round(
+                max(0.0, (pd.Timestamp(end_ts, unit="s", tz="UTC") - pings[1]).total_seconds() / 60), 1
+            )
+
+    if df.empty:
+        return pd.DataFrame(columns=EMPTY_WINDOW_COLUMNS)
+    in_window = (df["local_time"] >= window_start) & (df["local_time"] < window_end)
+    return df.loc[in_window].reset_index(drop=True)
+
+
+def _aggregate_bucket_speeds(arrow_table: pa.Table) -> pd.DataFrame:
+    """Average speed per (15-min local bucket, line, stop) over every ping in the table."""
     con = duckdb.connect()
     try:
         con.register("combined_data", arrow_table)
@@ -641,6 +774,9 @@ def fetch_segment_snapshots_for_multiple_buckets(
     lookup_df = lookup_df.dropna(subset=["pointId"])
     lookup_df = lookup_df.drop_duplicates(subset=["segment_id", "pointId", "lineId"])
 
+    # Windows are fetched one after another on purpose: each older day is a
+    # whole-day file (~2.3M rows), and fetching them in parallel measured
+    # 0.9 GB (2 at once) to 1.8 GB (5 at once) of extra memory instead of 0.4 GB.
     for window_start, window_end, bucket_group in grouped_windows:
         raw_speed_df = fetch_raw_bucket_speeds(
             token=token,
@@ -1047,15 +1183,16 @@ def run_tmp_model_inference(
         )
 
     try:
-        historical_df, historical_meta = build_historical_feature_matrix(
-            token=token,
-            gpkg_path=gpkg_path,
-            snapshot_time=snapshot_time,
-            ordered_segment_ids=ordered_segment_ids,
-            recent_steps=int(config["recent_steps"]),
-            use_daily_lag=bool(config["use_daily_lag"]),
-            use_weekly_lag=bool(config["use_weekly_lag"]),
-        )
+        with timed("model.history_features"):
+            historical_df, historical_meta = build_historical_feature_matrix(
+                token=token,
+                gpkg_path=gpkg_path,
+                snapshot_time=snapshot_time,
+                ordered_segment_ids=ordered_segment_ids,
+                recent_steps=int(config["recent_steps"]),
+                use_daily_lag=bool(config["use_daily_lag"]),
+                use_weekly_lag=bool(config["use_weekly_lag"]),
+            )
         diagnostics.update(historical_meta)
 
         historical_df = fill_missing_historical_values(
@@ -1109,7 +1246,7 @@ def run_tmp_model_inference(
     x = build_model_input_window_from_historical(historical_df)
     diagnostics["input_shape"] = tuple(int(v) for v in x.shape)
 
-    with torch.inference_mode():
+    with timed("model.inference"), torch.inference_mode():
         y_hat = model(x).squeeze(0).detach().cpu().numpy().astype(np.float32)
 
     y_hat, inverse_used = inverse_transform_predictions_if_needed(

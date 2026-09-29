@@ -1,3 +1,4 @@
+"""Brussels settings column: Google Routes filters, RUN and Reset."""
 import streamlit as st
 
 
@@ -41,18 +42,7 @@ def brussels_left_controls(
             st.warning("⚠️ Warning: Filters changed. Click 'Run' to apply changes to the maps.")
 
         st.markdown("---")
-
-        colorize = st.button(
-            "RUN",
-            use_container_width=True,
-            key="bru_colorize_btn",
-        )
-
-        reset = st.button(
-            "Reset colorization",
-            use_container_width=True,
-            key="bru_reset_colorize_btn",
-        )
+        buttons_slot = st.empty()
 
     return {
         "filters": {
@@ -60,6 +50,29 @@ def brussels_left_controls(
             "bus_ids": selected_bus_ids,
         },
         "has_pending_changes": has_pending_changes,
-        "colorize_clicked": colorize,
-        "reset_clicked": reset,
+        "buttons_slot": buttons_slot,
     }
+
+
+def brussels_run_buttons(slot, *, busy: bool, on_run=None, on_reset=None) -> None:
+    """RUN and Reset, drawn into slot; disabled while this session's update runs.
+
+    The disabled pair has its own keys, so the enabled pair can replace it in
+    the same script run when the update finishes (no extra rerun needed).
+    """
+    suffix = "_busy" if busy else ""
+    with slot.container():
+        st.button(
+            "RUN",
+            width="stretch",
+            key=f"bru_colorize_btn{suffix}",
+            on_click=on_run,
+            disabled=busy,
+        )
+        st.button(
+            "Reset colorization",
+            width="stretch",
+            key=f"bru_reset_colorize_btn{suffix}",
+            on_click=on_reset,
+            disabled=busy,
+        )

@@ -1,20 +1,26 @@
+"""Ixelles-Etterbeek page: bus speeds and estimates on a fixed segment network.
+
+Data: data/Brux_net.csv (segments). Estimates: cities/ixelles_etterbeek/pipeline.py.
+"""
 import os
 import streamlit as st
 import pandas as pd
 import folium
-from streamlit_folium import st_folium
 
-from core.styles import inject_styles
-from core.colors import get_speed_color, legend_html
+from core.colors import get_speed_color
 from core.data_sources import load_csv
-from core.pipelines import run_estimation_pipeline, load_results_dict
-from core.nav_panel import render_left_panel
+from core.layout import page_header, setup_page
+from core.map_render import show_folium_map, show_map_with_legend
+from cities.ixelles_etterbeek.pipeline import (
+    CSV_SEP,
+    NETWORK_CSV,
+    RESULTS_CSV,
+    load_results_dict,
+    run_estimation_pipeline,
+)
 
 
-st.set_page_config(page_title="Ixelles-Etterbeek", layout="wide")
-inject_styles()
-
-settings_box, content_box = render_left_panel("Ixelles-Etterbeek")
+settings_box, content_box = setup_page("Ixelles-Etterbeek")
 
 # ---------------- LEFT PANEL SETTINGS ----------------
 with settings_box:
@@ -43,9 +49,8 @@ with settings_box:
 # ----------------------------------------------------
 
 
-DATA_PATH = "data/Brux_net.csv"
-RESULTS_PATH = "results.csv"
-CSV_SEP = ";"
+DATA_PATH = str(NETWORK_CSV)
+RESULTS_PATH = str(RESULTS_CSV)
 
 
 @st.cache_data(show_spinner=False)
@@ -112,9 +117,9 @@ def build_map(
 
 # ---------------- MAIN CONTENT ----------------
 with content_box:
-    st.markdown("<h2 style='color:#009688;'>Ixelles-Etterbeek</h2>", unsafe_allow_html=True)
-    st.caption(
-        "Interactive visualisation of real-time probe-derived bus speeds alongside estimation across road segments."
+    page_header(
+        "Ixelles-Etterbeek",
+        "Interactive visualisation of real-time probe-derived bus speeds alongside estimation across road segments.",
     )
 
     if not os.path.exists(DATA_PATH):
@@ -135,7 +140,7 @@ with content_box:
 
     col_a, col_b, col_c = st.columns([2, 3, 2])
     with col_b:
-        run_clicked = st.button("Run Traffic Estimation", use_container_width=True)
+        run_clicked = st.button("Run Traffic Estimation", width="stretch")
 
     if run_clicked:
         st.session_state["ixelles_last_run_error"] = None
@@ -165,9 +170,5 @@ with content_box:
 
     m = build_map(df, s_lat, s_lon, e_lat, e_lon, center, results_dict, line_weight)
 
-    col_map, col_legend = st.columns([4, 1], vertical_alignment="top")
-    with col_map:
-        st_folium(m, width=850, height=550, key="ixelles_map", returned_objects=[])
-    with col_legend:
-        st.markdown(legend_html(), unsafe_allow_html=True)
+    show_map_with_legend(lambda: show_folium_map(m, key="ixelles_map"))
 # ----------------------------------------------

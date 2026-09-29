@@ -1,0 +1,245 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  />
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      font-family: Arial, sans-serif;
+      background: #ffffff;
+      /* st.iframe always allows scrolling; the page never needs it. */
+      overflow: hidden;
+    }
+
+    .wrapper {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .titles {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 8px;
+      font-weight: 700;
+      color: #1f2937;
+    }
+
+    .titles div {
+      text-align: center;
+      padding: 8px 6px;
+      background: #f3f4f6;
+      border-radius: 8px;
+      border: 1px solid #e5e7eb;
+      line-height: 1.25;
+      font-size: 13px;
+    }
+
+    .maps {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 8px;
+      min-height: 0;
+    }
+
+    .map {
+      width: 100%;
+      height: 520px;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .leaflet-tooltip {
+      padding: 0;
+      margin: 0;
+      border-radius: 6px;
+    }
+
+    .leaflet-tooltip-content {
+      font-size: 12px;
+      line-height: 1.35;
+      margin: 6px 8px;
+      min-width: 180px;
+      max-width: 240px;
+      white-space: normal;
+      word-break: normal;
+      overflow-wrap: break-word;
+    }
+
+    .metric-highlight {
+      display: inline-block;
+      color: #ffffff;
+      padding: 1px 5px;
+      border-radius: 4px;
+      font-weight: 700;
+      margin-left: 3px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+    <div class="titles">
+      <div>Bus Speeds (STIB)</div>
+      <div>__ESTIMATE_TITLE__</div>
+      <div>Google API Speeds</div>
+    </div>
+    <div class="maps">
+      <div id="map1" class="map"></div>
+      <div id="map2" class="map"></div>
+      <div id="map3" class="map"></div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/leaflet.sync@0.2.4/L.Map.Sync.min.js"></script>
+
+  <script>
+    const data = __GEOJSON__;
+
+    const center = [__CENTER_LAT__, __CENTER_LON__];
+    const zoom = 12;
+
+    const map1 = L.map('map1', { zoomControl: true }).setView(center, zoom);
+    const map2 = L.map('map2', { zoomControl: true }).setView(center, zoom);
+    const map3 = L.map('map3', { zoomControl: true }).setView(center, zoom);
+
+    const tile1 = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap'
+    });
+
+    const tile2 = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap'
+    });
+
+    const tile3 = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap'
+    });
+
+    tile1.addTo(map1);
+    tile2.addTo(map2);
+    tile3.addTo(map3);
+
+    map1.sync(map2);
+    map1.sync(map3);
+    map2.sync(map1);
+    map2.sync(map3);
+    map3.sync(map1);
+    map3.sync(map2);
+
+    function styleFactory(colorKey) {
+      return function(feature) {
+        return {
+          color: feature.properties[colorKey] || '#222222',
+          weight: 3,
+          opacity: 0.95
+        };
+      };
+    }
+
+    function busTooltip(feature, layer) {
+      const p = feature.properties || {};
+
+      const html = `
+        <div>
+          <b>Segment:</b> ${p.segment_name ?? 'N/A'}<br>
+          <b>Bus lines:</b> ${p.bus_lines_display ?? ''}<br>
+          <b>Bus speed:</b>
+          <span class="metric-highlight" style="background:${p.bus_highlight_color ?? '#222222'};">
+            ${p.bus_speed_str ?? 'N/A'}
+          </span><br>
+          <b>Estimated speed:</b> ${p.est_speed_str ?? 'N/A'}
+        </div>
+      `;
+      layer.bindTooltip(html, {
+        sticky: true,
+        direction: 'top',
+        offset: [0, -8],
+        opacity: 0.95
+      });
+    }
+
+    function estimatedTooltip(feature, layer) {
+      const p = feature.properties || {};
+
+      const html = `
+        <div>
+          <b>Segment:</b> ${p.segment_name ?? 'N/A'}<br>
+          <b>Bus lines:</b> ${p.bus_lines_display ?? ''}<br>
+          <b>Bus speed:</b> ${p.bus_speed_str ?? 'N/A'}<br>
+          <b>Estimated speed:</b>
+          <span class="metric-highlight" style="background:${p.est_highlight_color ?? '#222222'};">
+            ${p.est_speed_str ?? 'N/A'}
+          </span>
+        </div>
+      `;
+      layer.bindTooltip(html, {
+        sticky: true,
+        direction: 'top',
+        offset: [0, -8],
+        opacity: 0.95
+      });
+    }
+
+    function googleTooltip(feature, layer) {
+      const p = feature.properties || {};
+
+      const html = `
+        <div>
+          <b>Segment:</b> ${p.segment_name ?? 'N/A'}<br>
+          <b>Bus lines:</b> ${p.bus_lines_display ?? ''}<br>
+          <b>Bus speed:</b> ${p.bus_speed_str ?? 'N/A'}<br>
+          <b>Estimated speed:</b> ${p.est_speed_str ?? 'N/A'}<br>
+          <b>Google-reported speed:</b>
+          <span class="metric-highlight" style="background:${p.google_highlight_color ?? '#000000'};">
+            ${p.google_speed_str ?? 'N/A'}
+          </span><br>
+          <b>Google duration:</b> ${p.google_duration_str ?? 'N/A'}
+        </div>
+      `;
+      layer.bindTooltip(html, {
+        sticky: true,
+        direction: 'top',
+        offset: [0, -8],
+        opacity: 0.95
+      });
+    }
+
+    const layer1 = L.geoJSON(data, {
+      style: styleFactory('bus_color'),
+      onEachFeature: busTooltip
+    }).addTo(map1);
+
+    const layer2 = L.geoJSON(data, {
+      style: styleFactory('est_color'),
+      onEachFeature: estimatedTooltip
+    }).addTo(map2);
+
+    const layer3 = L.geoJSON(data, {
+      style: styleFactory('google_color'),
+      onEachFeature: googleTooltip
+    }).addTo(map3);
+
+    try {
+      const bounds = layer1.getBounds();
+      map1.fitBounds(bounds);
+    } catch (error) {
+      console.log(error);
+    }
+  </script>
+</body>
+</html>

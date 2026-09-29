@@ -1,10 +1,22 @@
 from __future__ import annotations
 
+import os
+
 import pandas as pd
 import geopandas as gpd
-import requests
 import streamlit as st
-from shapely.geometry import shape
+
+
+MOBILITY_TWIN_SECRET_KEY = "MOBILITY_TWIN_TOKEN"
+
+
+def get_mobility_twin_token() -> str | None:
+    """MobilityTwin (api.mobilitytwin.brussels) token from Streamlit secrets or the environment."""
+    try:
+        token = st.secrets.get(MOBILITY_TWIN_SECRET_KEY)
+    except Exception:  # no secrets.toml at all
+        token = None
+    return token or os.environ.get(MOBILITY_TWIN_SECRET_KEY)
 
 
 @st.cache_data(show_spinner=False)
@@ -15,22 +27,6 @@ def load_csv(path: str, sep: str = ";") -> pd.DataFrame:
 @st.cache_data(show_spinner=False)
 def load_gpkg(path: str) -> gpd.GeoDataFrame:
     return gpd.read_file(path)
-
-
-@st.cache_data(show_spinner=False, ttl=3600)
-def fetch_stib_shapefile(token: str) -> gpd.GeoDataFrame:
-    url = "https://api.mobilitytwin.brussels/stib/shapefile"
-    headers = {"Authorization": f"Bearer {token}"}
-    response = requests.get(url, headers=headers, timeout=60)
-    response.raise_for_status()
-
-    data = response.json()
-    geometries = [shape(feature["geometry"]) for feature in data["features"]]
-    properties_df = pd.DataFrame(
-        [feature["properties"] for feature in data["features"]]
-    )
-
-    return gpd.GeoDataFrame(properties_df, geometry=geometries, crs="EPSG:4326")
 
 
 @st.cache_data(show_spinner=False, ttl=90)

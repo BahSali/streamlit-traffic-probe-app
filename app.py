@@ -1,11 +1,8 @@
 import streamlit as st
-from core.styles import inject_styles
-from core.nav_panel import render_left_panel
 
-st.set_page_config(page_title="Average Speed Estimator", layout="wide")
-inject_styles()
+from core.layout import setup_page
 
-settings_box, content_box = render_left_panel("Home")
+settings_box, content_box = setup_page("Home", page_title="Average Speed Estimator")
 
 with settings_box:
     st.info("Select a map from the dropdown above.")
