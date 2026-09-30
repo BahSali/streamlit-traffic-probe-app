@@ -29,7 +29,7 @@
 
     .titles {
       display: grid;
-      grid-template-columns: 1fr 1fr 1fr;
+      grid-template-columns: __GRID_COLUMNS__;
       gap: 8px;
       font-weight: 700;
       color: #1f2937;
@@ -48,14 +48,14 @@
     .maps {
       flex: 1;
       display: grid;
-      grid-template-columns: 1fr 1fr 1fr;
+      grid-template-columns: __GRID_COLUMNS__;
       gap: 8px;
       min-height: 0;
     }
 
     .map {
       width: 100%;
-      height: 520px;
+      height: __MAP_HEIGHT__px;
       border: 1px solid #d1d5db;
       border-radius: 8px;
       overflow: hidden;
@@ -90,16 +90,7 @@
 </head>
 <body>
   <div class="wrapper">
-    <div class="titles">
-      <div>Bus Speeds (STIB)</div>
-      <div>__ESTIMATE_TITLE__</div>
-      <div>Google API Speeds</div>
-    </div>
-    <div class="maps">
-      <div id="map1" class="map"></div>
-      <div id="map2" class="map"></div>
-      <div id="map3" class="map"></div>
-    </div>
+__PANEL_ROWS__
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -111,35 +102,28 @@
     const center = [__CENTER_LAT__, __CENTER_LON__];
     const zoom = 12;
 
-    const map1 = L.map('map1', { zoomControl: true }).setView(center, zoom);
-    const map2 = L.map('map2', { zoomControl: true }).setView(center, zoom);
-    const map3 = L.map('map3', { zoomControl: true }).setView(center, zoom);
+    // One entry per map, in page order: { id, colorKey, tooltip }.
+    const panels = __PANELS__;
+    // Display name of the foundation model (HTML-escaped); null: no foundation model.
+    const foundationModelName = __FOUNDATION_MODEL_NAME__;
 
-    const tile1 = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19,
-      attribution: '&copy; OpenStreetMap'
+    const maps = panels.map(function(panel) {
+      const map = L.map(panel.id, { zoomControl: true }).setView(center, zoom);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap'
+      }).addTo(map);
+      return map;
     });
 
-    const tile2 = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19,
-      attribution: '&copy; OpenStreetMap'
+    // Every map follows every other map (zoom and pan).
+    maps.forEach(function(map) {
+      maps.forEach(function(other) {
+        if (other !== map) {
+          map.sync(other);
+        }
+      });
     });
-
-    const tile3 = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19,
-      attribution: '&copy; OpenStreetMap'
-    });
-
-    tile1.addTo(map1);
-    tile2.addTo(map2);
-    tile3.addTo(map3);
-
-    map1.sync(map2);
-    map1.sync(map3);
-    map2.sync(map1);
-    map2.sync(map3);
-    map3.sync(map1);
-    map3.sync(map2);
 
     function styleFactory(colorKey) {
       return function(feature) {
@@ -149,6 +133,24 @@
           opacity: 0.95
         };
       };
+    }
+
+    // "<br><b>{name} estimate:</b> ..." line, highlighted on the foundation-model map;
+    // empty when no foundation model is shown.
+    function foundationLine(p, highlighted) {
+      if (foundationModelName === null) {
+        return '';
+      }
+      const value = p.foundation_model_speed_str ?? 'N/A';
+      if (!highlighted) {
+        return `<br>
+          <b>${foundationModelName} estimate:</b> ${value}`;
+      }
+      return `<br>
+          <b>${foundationModelName} estimate:</b>
+          <span class="metric-highlight" style="background:${p.foundation_model_highlight_color ?? '#222222'};">
+            ${value}
+          </span>`;
     }
 
     function busTooltip(feature, layer) {
@@ -162,7 +164,7 @@
           <span class="metric-highlight" style="background:${p.bus_highlight_color ?? '#222222'};">
             ${p.bus_speed_str ?? 'N/A'}
           </span><br>
-          <b>Estimated speed:</b> ${p.est_speed_str ?? 'N/A'}
+          <b>Estimated speed:</b> ${p.est_speed_str ?? 'N/A'}${foundationLine(p, false)}
         </div>
       `;
       layer.bindTooltip(html, {
@@ -184,7 +186,7 @@
           <b>Estimated speed:</b>
           <span class="metric-highlight" style="background:${p.est_highlight_color ?? '#222222'};">
             ${p.est_speed_str ?? 'N/A'}
-          </span>
+          </span>${foundationLine(p, false)}
         </div>
       `;
       layer.bindTooltip(html, {
@@ -203,7 +205,7 @@
           <b>Segment:</b> ${p.segment_name ?? 'N/A'}<br>
           <b>Bus lines:</b> ${p.bus_lines_display ?? ''}<br>
           <b>Bus speed:</b> ${p.bus_speed_str ?? 'N/A'}<br>
-          <b>Estimated speed:</b> ${p.est_speed_str ?? 'N/A'}<br>
+          <b>Estimated speed:</b> ${p.est_speed_str ?? 'N/A'}${foundationLine(p, false)}<br>
           <b>Google-reported speed:</b>
           <span class="metric-highlight" style="background:${p.google_highlight_color ?? '#000000'};">
             ${p.google_speed_str ?? 'N/A'}
@@ -219,24 +221,42 @@
       });
     }
 
-    const layer1 = L.geoJSON(data, {
-      style: styleFactory('bus_color'),
-      onEachFeature: busTooltip
-    }).addTo(map1);
+    function foundationTooltip(feature, layer) {
+      const p = feature.properties || {};
 
-    const layer2 = L.geoJSON(data, {
-      style: styleFactory('est_color'),
-      onEachFeature: estimatedTooltip
-    }).addTo(map2);
+      const html = `
+        <div>
+          <b>Segment:</b> ${p.segment_name ?? 'N/A'}<br>
+          <b>Bus lines:</b> ${p.bus_lines_display ?? ''}<br>
+          <b>Bus speed:</b> ${p.bus_speed_str ?? 'N/A'}<br>
+          <b>Estimated speed:</b> ${p.est_speed_str ?? 'N/A'}${foundationLine(p, true)}
+        </div>
+      `;
+      layer.bindTooltip(html, {
+        sticky: true,
+        direction: 'top',
+        offset: [0, -8],
+        opacity: 0.95
+      });
+    }
 
-    const layer3 = L.geoJSON(data, {
-      style: styleFactory('google_color'),
-      onEachFeature: googleTooltip
-    }).addTo(map3);
+    const tooltips = {
+      bus: busTooltip,
+      estimated: estimatedTooltip,
+      foundation: foundationTooltip,
+      google: googleTooltip
+    };
+
+    const layers = panels.map(function(panel, i) {
+      return L.geoJSON(data, {
+        style: styleFactory(panel.colorKey),
+        onEachFeature: tooltips[panel.tooltip]
+      }).addTo(maps[i]);
+    });
 
     try {
-      const bounds = layer1.getBounds();
-      map1.fitBounds(bounds);
+      const bounds = layers[0].getBounds();
+      maps[0].fitBounds(bounds);
     } catch (error) {
       console.log(error);
     }
