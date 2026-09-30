@@ -9,6 +9,11 @@ Estimated speeds: the model's values are kept in MODEL_ESTIMATE_COLUMNS; the
 public columns (est_speed on the map, estimated_speed in the table) hold the
 values chosen by core.estimation.correction.displayed_estimates. Only the
 public columns leave this module.
+
+Foundation-model estimates (optional fourth map): only when
+core.config.SHOW_FOUNDATION_MODEL_MAP is True, foundation_model_speed (from
+foundation_model.py) and its FOUNDATION_MODEL_MAP_PROPERTIES are added to the
+map segments. They are not part of the table, charts or CSV download.
 """
 from __future__ import annotations
 
@@ -26,6 +31,8 @@ from cities.brussels.map_data import (
     build_segment_metadata_df,
     load_brussels_map,
 )
+from cities.brussels.foundation_model import predict_foundation_model_speeds
+from core import config
 from core.colors import NO_DATA_COLOR, NO_GOOGLE_DATA_COLOR, speed_color_or
 from core.data_sources import (
     get_mobility_twin_token,
@@ -58,6 +65,13 @@ MAP_PROPERTIES = [
     "bus_highlight_color",
     "est_highlight_color",
     "google_highlight_color",
+]
+# Added to the feature properties only when the foundation-model map is shown.
+FOUNDATION_MODEL_MAP_PROPERTIES = [
+    "foundation_model_speed",
+    "foundation_model_speed_str",
+    "foundation_model_color",
+    "foundation_model_highlight_color",
 ]
 COORDINATE_DECIMALS = 6  # ~0.1 m
 
@@ -196,6 +210,15 @@ def finalize_map_columns(gdf: pd.DataFrame) -> pd.DataFrame:
     result["est_highlight_color"] = result["est_color"]
     result["google_highlight_color"] = result["google_color"]
 
+    # Only present when the foundation-model map is shown; same formatting and
+    # colour scale as the estimated-speed map.
+    if "foundation_model_speed" in result.columns:
+        result["foundation_model_speed_str"] = result["foundation_model_speed"].apply(format_speed)
+        result["foundation_model_color"] = result["foundation_model_speed"].apply(
+            speed_color_or, missing_color=NO_DATA_COLOR
+        )
+        result["foundation_model_highlight_color"] = result["foundation_model_color"]
+
     return result
 
 
@@ -218,10 +241,13 @@ def _json_value(value):
 def build_geojson_text(gdf: pd.DataFrame) -> str:
     """FeatureCollection text for synced_maps.html (static geometry + current speeds)."""
     geometry_json = map_geometry_json()
-    records = gdf[MAP_PROPERTIES].astype(object).to_numpy().tolist()
+    properties = MAP_PROPERTIES
+    if "foundation_model_speed" in gdf.columns:
+        properties = MAP_PROPERTIES + FOUNDATION_MODEL_MAP_PROPERTIES
+    records = gdf[properties].astype(object).to_numpy().tolist()
     features = [
         '{"type": "Feature", "properties": '
-        + json.dumps(dict(zip(MAP_PROPERTIES, map(_json_value, record))))
+        + json.dumps(dict(zip(properties, map(_json_value, record))))
         + ', "geometry": '
         + geometry_json[map_fid]
         + "}"
@@ -252,11 +278,17 @@ def _finish_payload(gdf: pd.DataFrame, **parts) -> dict:
 
 
 @st.cache_data(show_spinner=False)
-def build_idle_payload() -> dict:
-    """The uncoloured network shown before the first RUN and after Reset."""
+def build_idle_payload(include_foundation_model: bool = False) -> dict:
+    """The uncoloured network shown before the first RUN and after Reset.
+
+    include_foundation_model: also carry the (empty) foundation-model fields,
+    for the fourth map.
+    """
     gdf = load_brussels_map().copy()
     for column in ["bus_speed", "est_speed", "google_speed", "google_duration_seconds"]:
         gdf[column] = pd.NA
+    if include_foundation_model:
+        gdf["foundation_model_speed"] = pd.NA
     return _finish_payload(
         gdf,
         diagnostics=empty_live_diagnostics(gdf),
@@ -372,6 +404,10 @@ def build_run_payload(
             segment_metadata_df,
             source_id_col="segment_id",
         )
+
+    if config.SHOW_FOUNDATION_MODEL_MAP:
+        with timed("brussels.foundation_model"):
+            gdf["foundation_model_speed"] = predict_foundation_model_speeds(gdf)
 
     on_stage("updating_maps")
     model_estimates_df = enriched_snapshot_df.reindex(
