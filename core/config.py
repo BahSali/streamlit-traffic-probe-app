@@ -33,7 +33,7 @@ GOOGLE_ROUTES_MONTHLY_LIMIT = 5000
 # tooltips; the data fields are generic (foundation_model_*), so another model
 # only needs a new name here and new predictions in
 # cities/brussels/foundation_model.py.
-SHOW_FOUNDATION_MODEL_MAP = False
+SHOW_FOUNDATION_MODEL_MAP = True
 FOUNDATION_MODEL_NAME = "TabPFN"
 
 # ---------------------------------------------------------------------------
