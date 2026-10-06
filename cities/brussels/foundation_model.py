@@ -11,6 +11,7 @@ FoundationUnavailable; the caller then shows no estimates, never made-up ones.
 """
 from __future__ import annotations
 
+import logging
 import os
 
 import numpy as np
@@ -19,6 +20,8 @@ import streamlit as st
 
 from cities.brussels import foundation_features as ff
 from cities.brussels.map_data import MAP_PATH
+
+logger = logging.getLogger("estimator.timing")  # same stderr handler as core.timing
 
 TABPFN_SECRET_KEY = "TABPFN_TOKEN"
 UNAVAILABLE_MESSAGE = "TabPFN estimates are unavailable for this run."
@@ -29,13 +32,21 @@ class FoundationUnavailable(Exception):
 
 
 def get_tabpfn_token() -> str | None:
-    """TabPFN token from Streamlit secrets or the environment (never hard-coded)."""
-    try:
-        token = st.secrets.get(TABPFN_SECRET_KEY)
-    except Exception:  # no secrets.toml at all
-        token = None
-    token = token or os.environ.get(TABPFN_SECRET_KEY)
-    return (str(token).strip() or None) if token else None
+    """TabPFN token from the environment, then Streamlit secrets (never hard-coded).
+
+    Root-level Streamlit secrets are also exposed as environment variables, which
+    works in the background update thread where st.secrets may not. The token is
+    never logged; only whether one was found, and where.
+    """
+    token, source = os.environ.get(TABPFN_SECRET_KEY), "environment"
+    if not (token and str(token).strip()):
+        try:
+            token, source = st.secrets.get(TABPFN_SECRET_KEY), "secrets"
+        except Exception:  # no secrets.toml at all, or no script context in this thread
+            token = None
+    token = str(token).strip() if token else None
+    logger.info("TABPFN_TOKEN available: %s%s", bool(token), f" (from {source})" if token else "")
+    return token or None
 
 
 @st.cache_resource(show_spinner=False)

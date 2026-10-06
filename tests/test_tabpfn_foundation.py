@@ -192,11 +192,19 @@ def test_missing_token_disables_tabpfn_without_calling_it(monkeypatch, static):
     assert loaded == []
 
 
-def test_token_is_read_from_streamlit_secrets_then_environment(monkeypatch):
+def test_token_prefers_the_environment_then_secrets_and_is_never_logged(monkeypatch, caplog):
+    secrets = {"TABPFN_TOKEN": "from-secrets"}
+    monkeypatch.setattr(st, "secrets", secrets)
     monkeypatch.setenv("TABPFN_TOKEN", "from-env")
-    assert fm.get_tabpfn_token() == "from-env"
-    monkeypatch.delenv("TABPFN_TOKEN")
-    assert fm.get_tabpfn_token() is None
+    with caplog.at_level("INFO", logger="estimator.timing"):
+        assert fm.get_tabpfn_token() == "from-env"
+        monkeypatch.delenv("TABPFN_TOKEN")
+        assert fm.get_tabpfn_token() == "from-secrets"  # no env var: falls back to st.secrets
+        monkeypatch.setattr(st, "secrets", {})
+        assert fm.get_tabpfn_token() is None
+    assert "TABPFN_TOKEN available: True (from environment)" in caplog.text
+    assert "TABPFN_TOKEN available: False" in caplog.text
+    assert "from-env" not in caplog.text and "from-secrets" not in caplog.text
 
 
 def test_prediction_sets_the_token_and_never_fits(tabpfn, static):
