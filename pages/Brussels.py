@@ -1,5 +1,6 @@
 """Brussels page: three synced maps (STIB bus / estimated / Google speeds),
-or four with the optional foundation-model map (core.config.SHOW_FOUNDATION_MODEL_MAP).
+or four with the optional foundation-model map (sidebar toggle, default
+core.config.SHOW_FOUNDATION_MODEL_MAP, applied by RUN).
 
 Each script run:
   1. draws the controls and the content slots, filled with the last RUN's
@@ -33,7 +34,7 @@ from cities.brussels.session import (
 )
 from cities.brussels.speed_layers import build_idle_payload
 from cities.brussels.synced_maps import build_synced_maps_html
-from core.config import APPLY_DEMO_SPEED_CORRECTION, FOUNDATION_MODEL_NAME, SHOW_FOUNDATION_MODEL_MAP
+from core.config import APPLY_DEMO_SPEED_CORRECTION, FOUNDATION_MODEL_NAME
 from core.layout import page_header, setup_page
 from core.map_render import show_map_with_legend
 from core.timing import timed
@@ -48,7 +49,8 @@ else:
     ESTIMATE_MAP_TITLE = "Estimated Speeds (Model)"
 
 # Iframe height: one row of three maps, or a 2x2 grid with the foundation-model map.
-MAP_HEIGHT = 940 if SHOW_FOUNDATION_MODEL_MAP else 560
+MAP_HEIGHT_FOUR_MAPS = 940
+MAP_HEIGHT_THREE_MAPS = 560
 # How often a script run checks the update's progress.
 UPDATE_POLL_SECONDS = 0.2
 
@@ -146,12 +148,15 @@ def render_content(slots: dict, payload: dict, updating: bool = False) -> None:
                 payload["center_lat"],
                 payload["center_lon"],
                 estimate_title=ESTIMATE_MAP_TITLE,
-                foundation_model_name=FOUNDATION_MODEL_NAME if SHOW_FOUNDATION_MODEL_MAP else None,
+                foundation_model_name=FOUNDATION_MODEL_NAME if payload.get("foundation_shown") else None,
             )
             log["bytes"] = len(payload["html"])
     with slots["maps"].container():
         show_map_with_legend(
-            lambda: st.iframe(payload["html"], height=MAP_HEIGHT),
+            lambda: st.iframe(
+                payload["html"],
+                height=MAP_HEIGHT_FOUR_MAPS if payload.get("foundation_shown") else MAP_HEIGHT_THREE_MAPS,
+            ),
             ratio=(10, 1),
         )
 
@@ -220,6 +225,7 @@ controls = brussels_left_controls(
     bus_id_options=bus_id_options,
     applied_segment_names=st.session_state["brussels_applied_segment_names"],
     applied_bus_ids=st.session_state["brussels_applied_bus_ids"],
+    applied_show_foundation=st.session_state["brussels_applied_show_foundation"],
 )
 job = update_job()
 brussels_run_buttons(controls["buttons_slot"], busy=job is not None, on_run=on_run_clicked, on_reset=on_reset_clicked)
@@ -241,7 +247,7 @@ with content_box:
     slots["overview"] = st.empty()
 
 previous_payload = st.session_state["brussels_payload"]
-render_content(slots, previous_payload or build_idle_payload(SHOW_FOUNDATION_MODEL_MAP), updating=job is not None)
+render_content(slots, previous_payload or build_idle_payload(controls["show_foundation"]), updating=job is not None)
 
 if job is not None:
     # The update runs in this session's UpdateJob (started by RUN); this script run
@@ -279,7 +285,7 @@ if job is not None:
     else:
         # The maps still show the last successful result: show its status lines again.
         with slots["diagnostics"].container():
-            render_diagnostics(previous_payload or build_idle_payload(SHOW_FOUNDATION_MODEL_MAP), st.session_state["brussels_google_diagnostics"])
+            render_diagnostics(previous_payload or build_idle_payload(controls["show_foundation"]), st.session_state["brussels_google_diagnostics"])
         with status_slot.container():
             failed = st.status("Update failed", state="error", expanded=True)
             failed.write(f"{type(job.error).__name__}: {job.error}")

@@ -1,6 +1,8 @@
 """Brussels settings column: Google Routes filters, RUN and Reset."""
 import streamlit as st
 
+from core import config
+
 
 def brussels_left_controls(
     settings_box,
@@ -9,6 +11,7 @@ def brussels_left_controls(
     bus_id_options: list[str] | None = None,
     applied_segment_names: list[str] | None = None,
     applied_bus_ids: list[str] | None = None,
+    applied_show_foundation: bool | None = None,
 ) -> dict:
     segment_options = segment_options or []
     bus_id_options = bus_id_options or []
@@ -42,6 +45,14 @@ def brussels_left_controls(
             st.warning("⚠️ Warning: Filters changed. Click 'Run' to apply changes to the maps.")
 
         st.markdown("---")
+        # Starts at the config default; applied by RUN, like the filters.
+        show_foundation = st.toggle(
+            f"Show {config.FOUNDATION_MODEL_NAME} map",
+            value=config.SHOW_FOUNDATION_MODEL_MAP,
+            key="bru_show_foundation",
+        )
+        if applied_show_foundation is not None and show_foundation != applied_show_foundation:
+            st.caption("Click 'Run' to apply the map change.")
         buttons_slot = st.empty()
 
     return {
@@ -49,6 +60,7 @@ def brussels_left_controls(
             "segment_names": selected_segments,
             "bus_ids": selected_bus_ids,
         },
+        "show_foundation": show_foundation,
         "has_pending_changes": has_pending_changes,
         "buttons_slot": buttons_slot,
     }

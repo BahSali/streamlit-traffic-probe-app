@@ -300,6 +300,7 @@ def build_idle_payload(include_foundation_model: bool = False) -> dict:
         completed_snapshot_df=pd.DataFrame(),
         enriched_snapshot_df=pd.DataFrame(),
         model_estimates_df=pd.DataFrame(),
+        foundation_shown=include_foundation_model,
     )
 
 
@@ -307,8 +308,12 @@ def build_run_payload(
     google_results_df: pd.DataFrame,
     refresh_key: int,
     on_stage: Callable[[str], None] = lambda stage: None,
+    include_foundation_model: bool | None = None,
 ) -> dict:
     """Everything the page shows after a RUN.
+
+    include_foundation_model: compute and show the foundation-model map; None
+    uses core.config.SHOW_FOUNDATION_MODEL_MAP.
 
     Stages reported through on_stage: "bus_data" (MobilityTwin live and
     recent STIB data), "estimating" (model), "updating_maps".
@@ -409,8 +414,10 @@ def build_run_payload(
             source_id_col="segment_id",
         )
 
+    if include_foundation_model is None:
+        include_foundation_model = config.SHOW_FOUNDATION_MODEL_MAP
     foundation_warning = None
-    if config.SHOW_FOUNDATION_MODEL_MAP:
+    if include_foundation_model:
         with timed("brussels.foundation_model"):
             # A TabPFN failure leaves the foundation map empty; nothing else is affected.
             try:
@@ -436,4 +443,5 @@ def build_run_payload(
         # Model estimates before any demo correction (not displayed).
         model_estimates_df=model_estimates_df,
         foundation_warning=foundation_warning,
+        foundation_shown=include_foundation_model,
     )

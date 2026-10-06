@@ -55,6 +55,13 @@ class FakeRegressor:
         return X["segment_id"].to_numpy(dtype=float) + 1000.0
 
 
+@pytest.fixture(autouse=True)
+def fresh_prediction_cache():
+    fm.clear_prediction_cache()
+    yield
+    fm.clear_prediction_cache()
+
+
 @pytest.fixture
 def tabpfn(monkeypatch, static):
     reg = FakeRegressor()
@@ -275,3 +282,135 @@ def test_disabled_foundation_model_makes_no_tabpfn_call(offline, monkeypatch, ta
     at, features, table = run_payload(offline, monkeypatch, show=False)
     assert tabpfn.predict_calls == [] and tabpfn.tokens == []
     assert not [c for c in features.columns if c.startswith("foundation_model")]
+
+
+# Prediction cache ---------------------------------------------------------------------------------
+
+def test_identical_inputs_call_the_remote_predict_only_once(tabpfn, static, caplog):
+    gdf = load_brussels_map()
+    with caplog.at_level("INFO", logger="estimator.timing"):
+        first = run_prediction(gdf, static)
+        second = run_prediction(gdf, static)
+    assert len(tabpfn.predict_calls) == 1
+    pd.testing.assert_series_equal(first, second)
+    assert caplog.text.index("cache: miss") < caplog.text.index("cache: hit")
+    assert caplog.text.count("cache: miss") == 1 and caplog.text.count("cache: hit") == 1
+
+
+def test_changed_inputs_or_a_new_bucket_predict_again(tabpfn, static, monkeypatch):
+    gdf = load_brussels_map()
+    run_prediction(gdf, static)
+    changed = history_df(static) + 1.0  # different STIB history
+    monkeypatch.setattr(fm, "fetch_history", lambda token, snapshot_time: changed)
+    run_prediction(gdf, static)
+    assert len(tabpfn.predict_calls) == 2
+    later = snapshot_df(static).assign(snapshot_time=SNAPSHOT_TIME + pd.Timedelta(minutes=15))
+    fm.predict_foundation_model_speeds(gdf, later, "mobility-token")  # next bucket
+    assert len(tabpfn.predict_calls) == 3
+
+
+def test_failed_predictions_are_not_cached(tabpfn, static, monkeypatch):
+    gdf = load_brussels_map()
+    good = tabpfn.predict
+    monkeypatch.setattr(tabpfn, "predict", lambda X: (_ for _ in ()).throw(RuntimeError("quota")))
+    with pytest.raises(fm.FoundationUnavailable):
+        run_prediction(gdf, static)
+    monkeypatch.setattr(tabpfn, "predict", good)
+    run_prediction(gdf, static)  # not served from a cached failure
+    assert len(tabpfn.predict_calls) == 1
+    monkeypatch.setattr(tabpfn, "predict", lambda X: np.zeros(3))  # bad shape: not cached either
+    fm.clear_prediction_cache()
+    with pytest.raises(fm.FoundationUnavailable):
+        run_prediction(gdf, static)
+    assert not fm._prediction_cache
+
+
+def test_the_cache_holds_predictions_only_never_the_token(tabpfn, static):
+    run_prediction(load_brussels_map(), static)
+    stored = repr(list(fm._prediction_cache.keys())) + repr(list(fm._prediction_cache.values()))
+    assert "fake-tabpfn-token" not in stored and "mobility-token" not in stored
+    assert all(isinstance(v, np.ndarray) for v in fm._prediction_cache.values())
+
+
+# Sidebar toggle ------------------------------------------------------------------------------------
+
+def page_run(offline_fixture, monkeypatch, *, default, toggle, click_run=True):
+    from tests.conftest import app
+
+    monkeypatch.setattr(config, "SHOW_FOUNDATION_MODEL_MAP", default)
+    st.cache_data.clear()
+    at = app("pages/Brussels.py").run()
+    assert not at.exception
+    at.toggle(key="bru_show_foundation").set_value(toggle).run()
+    if click_run:
+        at.multiselect(key="bru_bus_ids").set_value(["12", "71"]).run()
+        [run] = [b for b in at.button if b.label == "RUN"]
+        at = run.click().run()
+        assert not at.exception
+    return at
+
+
+def maps_in(html):
+    import re
+
+    return re.findall(r'<div id="(map\d+)" class="map"></div>', html)
+
+
+def test_toggle_off_shows_three_maps_and_runs_no_tabpfn(offline, monkeypatch, tabpfn):
+    at = page_run(offline, monkeypatch, default=True, toggle=False)
+    assert maps_in(offline["html"][-1]) == ["map1", "map2", "map3"]
+    assert tabpfn.predict_calls == [] and tabpfn.tokens == []
+    assert not [c for c in map_features(offline["html"][-1]).columns if c.startswith("foundation_model")]
+    assert not [w for w in at.warning if "TabPFN" in w.value]
+
+
+def test_toggle_on_shows_four_maps_and_uses_tabpfn(offline, monkeypatch, tabpfn):
+    at = page_run(offline, monkeypatch, default=False, toggle=True)  # config default off, session on
+    assert maps_in(offline["html"][-1]) == ["map1", "map2", "map3", "map4"]
+    assert len(tabpfn.predict_calls) == 1
+    assert map_features(offline["html"][-1])["foundation_model_speed"].notna().all()
+
+
+def test_config_default_sets_the_initial_toggle_value(offline, monkeypatch):
+    from tests.conftest import app
+
+    for default in (True, False):
+        monkeypatch.setattr(config, "SHOW_FOUNDATION_MODEL_MAP", default)
+        st.cache_data.clear()
+        at = app("pages/Brussels.py").run()
+        assert at.toggle(key="bru_show_foundation").value is default
+        assert at.toggle(key="bru_show_foundation").label == "Show TabPFN map"
+        assert (len(maps_in(offline["html"][-1])) == 4) is default  # idle page follows the toggle
+
+
+def test_toggling_after_a_run_does_not_call_tabpfn_again_until_run(offline, monkeypatch, tabpfn):
+    at = page_run(offline, monkeypatch, default=True, toggle=True)
+    assert len(tabpfn.predict_calls) == 1
+    at.toggle(key="bru_show_foundation").set_value(False).run()
+    assert maps_in(offline["html"][-1]) == ["map1", "map2", "map3", "map4"]  # applied at the next RUN
+    assert any("Click 'Run' to apply" in c.value for c in at.caption)
+    assert len(tabpfn.predict_calls) == 1
+    [run] = [b for b in at.button if b.label == "RUN"]
+    at = run.click().run()
+    assert maps_in(offline["html"][-1]) == ["map1", "map2", "map3"]
+    assert len(tabpfn.predict_calls) == 1  # OFF: no TabPFN call
+
+
+def test_second_run_with_identical_inputs_reuses_the_cached_prediction(offline, monkeypatch, tabpfn):
+    at = page_run(offline, monkeypatch, default=True, toggle=True)
+    st.cache_data.clear()
+    [run] = [b for b in at.button if b.label == "RUN"]
+    at = run.click().run()
+    assert not at.exception and len(tabpfn.predict_calls) == 1
+
+
+def test_existing_sidebar_controls_are_unchanged(offline, monkeypatch):
+    from tests.conftest import app
+
+    monkeypatch.setattr(config, "SHOW_FOUNDATION_MODEL_MAP", True)
+    st.cache_data.clear()
+    at = app("pages/Brussels.py").run()
+    assert [m.label for m in at.multiselect] == ["Segment name(s)", "Bus ID(s)"]
+    assert [b.label for b in at.button] == ["RUN", "Reset colorization"]
+    assert [t.label for t in at.toggle] == ["Show TabPFN map"]
+    assert [s.label for s in at.selectbox] == ["Choose an area"]

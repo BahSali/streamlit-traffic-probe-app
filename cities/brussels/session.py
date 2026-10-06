@@ -25,6 +25,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import streamlit as st
 
+from core import config
 from cities.brussels.map_data import get_selected_mask, load_brussels_map
 from cities.brussels.speed_layers import build_run_payload
 from cities.brussels.update_job import UpdateJob
@@ -79,6 +80,8 @@ def init_session_state() -> None:
         "brussels_applied_segment_names": [],
         "brussels_applied_bus_ids": [],
         "brussels_refresh_key": 0,
+        # Sidebar foundation-map toggle as of the last RUN; None before any RUN.
+        "brussels_applied_show_foundation": None,
         # UpdateJob of the RUN in progress (see update_job.py); None when idle.
         "brussels_update_job": None,
         # Result of the last RUN (see speed_layers.build_run_payload); None before any RUN.
@@ -104,6 +107,11 @@ def update_job() -> UpdateJob | None:
     return st.session_state.get("brussels_update_job")
 
 
+def foundation_map_requested() -> bool:
+    """The sidebar toggle's current value (the config default until the widget exists)."""
+    return bool(st.session_state.get("bru_show_foundation", config.SHOW_FOUNDATION_MODEL_MAP))
+
+
 def on_run_clicked() -> None:
     """RUN callback: apply the current filters and start the update.
 
@@ -117,6 +125,7 @@ def on_run_clicked() -> None:
         return
     state["brussels_applied_segment_names"] = list(state.get("bru_seg_names", []))
     state["brussels_applied_bus_ids"] = list(state.get("bru_bus_ids", []))
+    state["brussels_applied_show_foundation"] = foundation_map_requested()
     state["brussels_colorized"] = True
     state["brussels_refresh_key"] += 1
     state["brussels_update_job"] = UpdateJob(compute_update, update_inputs()).start()
@@ -151,6 +160,7 @@ def update_inputs() -> dict:
     return {
         "selection": applied_selection(),
         "refresh_key": state["brussels_refresh_key"],
+        "show_foundation": state["brussels_applied_show_foundation"],
         "last_google_fetch": state["brussels_google_fetch"],
         "last_google_results_df": state["brussels_google_results_df"],
         "last_google_diagnostics": dict(state["brussels_google_diagnostics"]),
@@ -240,6 +250,7 @@ def compute_update(inputs: dict, report: Callable[[str], None]) -> dict:
             google_results_df=google["results_df"],
             refresh_key=inputs["refresh_key"],
             on_stage=lambda name: report(stage_labels[name]),
+            include_foundation_model=inputs["show_foundation"],
         )
     payload["updated_at"] = datetime.now(BRUSSELS_TZ)
     payload["result_id"] = uuid.uuid4().hex

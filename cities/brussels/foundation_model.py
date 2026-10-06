@@ -11,8 +11,13 @@ FoundationUnavailable; the caller then shows no estimates, never made-up ones.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
+import threading
+from collections import OrderedDict
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -26,6 +31,15 @@ logger = logging.getLogger("estimator.timing")  # same stderr handler as core.ti
 
 TABPFN_SECRET_KEY = "TABPFN_TOKEN"
 UNAVAILABLE_MESSAGE = "TabPFN estimates are unavailable for this run."
+
+
+# Successful predictions only (never the token), keyed by model, 15-minute bucket and
+# the exact feature matrix. Shared by all sessions of the process; the newest entries
+# are kept. Each is 1366 floats.
+PREDICTION_CACHE_SIZE = 16
+_prediction_cache: OrderedDict[tuple, np.ndarray] = OrderedDict()
+_cache_lock = threading.Lock()
+_key_locks: dict[tuple, threading.Lock] = {}
 
 
 class FoundationUnavailable(Exception):
@@ -56,6 +70,54 @@ def load_regressor(model_path: str = str(ff.MODEL_PATH)):
     from tabpfn_client import TabPFNRegressor  # imported lazily: opening the page stays light
 
     return TabPFNRegressor.load_model(model_path)
+
+
+def model_key(model_path: str = str(ff.MODEL_PATH)) -> str:
+    """Identity of the saved model: its model_id and a digest of the whole record."""
+    raw = Path(model_path).read_bytes()
+    return f"{json.loads(raw).get('model_id')}:{hashlib.sha256(raw).hexdigest()[:16]}"
+
+
+def prediction_cache_key(features: pd.DataFrame, snapshot_time) -> tuple:
+    matrix = np.ascontiguousarray(features[ff.FEATURES].to_numpy(dtype="float64"))
+    digest = hashlib.sha256(matrix.tobytes()).hexdigest()
+    bucket = pd.Timestamp(snapshot_time).floor(f"{ff.LAG_MINUTES}min").isoformat()
+    return (model_key(), bucket, matrix.shape, digest)
+
+
+def clear_prediction_cache() -> None:
+    with _cache_lock:
+        _prediction_cache.clear()
+
+
+def cached_predict(features: pd.DataFrame, snapshot_time, predict) -> np.ndarray:
+    """predict(features) unless this exact input was already predicted successfully.
+
+    A failure is raised, never cached. Concurrent sessions with the same input
+    wait for one remote call instead of making two.
+    """
+    key = prediction_cache_key(features, snapshot_time)
+    with _cache_lock:
+        key_lock = _key_locks.setdefault(key, threading.Lock())
+    with key_lock:
+        with _cache_lock:
+            hit = _prediction_cache.get(key)
+            if hit is not None:
+                _prediction_cache.move_to_end(key)
+        if hit is not None:
+            logger.info("TabPFN prediction cache: hit (bucket=%s key=%s)", key[1], key[3][:12])
+            return hit.copy()
+        logger.info("TabPFN prediction cache: miss (bucket=%s key=%s)", key[1], key[3][:12])
+        try:
+            predictions = predict(features)
+            with _cache_lock:
+                _prediction_cache[key] = predictions.copy()
+                while len(_prediction_cache) > PREDICTION_CACHE_SIZE:
+                    _prediction_cache.popitem(last=False)
+            return predictions
+        finally:
+            with _cache_lock:
+                _key_locks.pop(key, None)
 
 
 def fetch_history(token: str, snapshot_time) -> pd.DataFrame:
@@ -131,15 +193,21 @@ def predict_foundation_model_speeds(
             if len(features) != len(static.fid) or list(features.columns) != ff.FEATURES:
                 raise FoundationUnavailable("TabPFN features do not match the expected schema.")
 
-            with timed("tabpfn.import_client"):
-                import tabpfn_client
-            with timed("tabpfn.load_model_json"):  # cached after the first RUN
-                regressor = load_regressor()
-            with timed("tabpfn.set_access_token"):
-                tabpfn_client.set_access_token(tabpfn_token)
-            with timed("tabpfn.predict", rows=len(features), columns=features.shape[1]):
-                # The first predict() also authenticates and may poll the remote service.
-                predictions = np.asarray(regressor.predict(features[ff.FEATURES]), dtype=float)
+            def remote_predict(X: pd.DataFrame) -> np.ndarray:
+                with timed("tabpfn.import_client"):
+                    import tabpfn_client
+                with timed("tabpfn.load_model_json"):  # cached after the first RUN
+                    regressor = load_regressor()
+                with timed("tabpfn.set_access_token"):
+                    tabpfn_client.set_access_token(tabpfn_token)
+                with timed("tabpfn.predict", rows=len(X), columns=X.shape[1]):
+                    # The first predict() also authenticates and may poll the remote service.
+                    result = np.asarray(regressor.predict(X[ff.FEATURES]), dtype=float)
+                if result.shape != (len(X),):
+                    raise FoundationUnavailable("TabPFN returned an unexpected prediction shape.")
+                return result  # only a valid result reaches the cache
+
+            predictions = cached_predict(features, snapshot_time, remote_predict)
             if predictions.shape != (len(features),):
                 raise FoundationUnavailable("TabPFN returned an unexpected prediction shape.")
             with timed("tabpfn.map_to_segment_ids"):
