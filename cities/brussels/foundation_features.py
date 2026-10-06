@@ -23,6 +23,7 @@ import streamlit as st
 from scipy.sparse.csgraph import shortest_path
 
 from core.config import DATA_DIR
+from core.timing import timed
 
 GPKG_PATH = DATA_DIR / "Brussels_map_6km.gpkg"
 ADJACENCY_PATH = DATA_DIR / "adjacency_binary.csv"
@@ -102,9 +103,10 @@ def build_static_inputs(segments: pd.DataFrame, adjacency: pd.DataFrame) -> Stat
             "end_lat": segments["end_lat"].to_numpy(),
         }
     )
-    neighbours = neighbour_positions(
-        matrix, metadata.start_lon, metadata.start_lat, metadata.end_lon, metadata.end_lat
-    )
+    with timed("tabpfn.neighbour_table", segments=len(fid)):
+        neighbours = neighbour_positions(
+            matrix, metadata.start_lon, metadata.start_lat, metadata.end_lon, metadata.end_lat
+        )
     original_id = segments["id"].astype(str).str.strip().to_numpy()
     return StaticInputs(fid=fid, original_id=original_id, metadata=metadata, neighbours=neighbours)
 
@@ -112,9 +114,11 @@ def build_static_inputs(segments: pd.DataFrame, adjacency: pd.DataFrame) -> Stat
 @st.cache_resource(show_spinner=False)
 def load_static_inputs(gpkg_path: str = str(GPKG_PATH), adjacency_path: str = str(ADJACENCY_PATH)) -> StaticInputs:
     """Static adjacency / metadata / neighbour lookup, built once per process."""
-    segments = gpd.read_file(gpkg_path, fid_as_index=True)
-    adjacency = pd.read_csv(adjacency_path, index_col=0)
-    return build_static_inputs(segments, adjacency)
+    with timed("tabpfn.static_files_read"):
+        segments = gpd.read_file(gpkg_path, fid_as_index=True)
+        adjacency = pd.read_csv(adjacency_path, index_col=0)
+    with timed("tabpfn.static_inputs_build"):
+        return build_static_inputs(segments, adjacency)
 
 
 def lag_bucket_times(snapshot_time) -> list[pd.Timestamp]:
