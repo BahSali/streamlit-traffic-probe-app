@@ -14,3 +14,5 @@ altair
 pyarrow
 requests
 google-cloud-storage
+tabpfn-client==0.6.0
+scipy

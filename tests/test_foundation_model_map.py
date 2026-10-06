@@ -6,7 +6,6 @@ import pandas as pd
 import pytest
 import streamlit as st
 
-from cities.brussels.foundation_model import PLACEHOLDER_SPEED_KMH
 from cities.brussels.speed_layers import FOUNDATION_MODEL_MAP_PROPERTIES, MAP_PROPERTIES, finalize_map_columns
 from cities.brussels.synced_maps import build_synced_maps_html, build_three_map_html
 from core import config
@@ -108,9 +107,9 @@ def test_brussels_page_with_and_without_foundation_model_map(offline, monkeypatc
     assert map_divs(on_html) == ["map1", "map2", "map3", "map4"]
     assert panel_titles(on_html)[2] == "Chronos Estimate"
     assert foundation_name(on_html) == "Chronos"
-    assert (on_features["foundation_model_speed"] == PLACEHOLDER_SPEED_KMH).all()
-    assert (on_features["foundation_model_speed_str"] == "25.0 km/h").all()
-    assert (on_features["foundation_model_color"] == speed_color_or(PLACEHOLDER_SPEED_KMH, missing_color="")).all()
+    # No TabPFN token in the test environment: the map is empty ("N/A"), never a made-up speed.
+    assert on_features["foundation_model_speed"].isna().all()
+    assert (on_features["foundation_model_speed_str"] == "N/A").all()
 
     # The existing maps' data, the table / CSV and the external calls are unchanged.
     pd.testing.assert_frame_equal(on_features[MAP_PROPERTIES[1:]], off_features[MAP_PROPERTIES[1:]])

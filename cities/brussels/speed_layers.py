@@ -31,7 +31,11 @@ from cities.brussels.map_data import (
     build_segment_metadata_df,
     load_brussels_map,
 )
-from cities.brussels.foundation_model import predict_foundation_model_speeds
+from cities.brussels.foundation_model import (
+    UNAVAILABLE_MESSAGE,
+    FoundationUnavailable,
+    predict_foundation_model_speeds,
+)
 from core import config
 from core.colors import NO_DATA_COLOR, NO_GOOGLE_DATA_COLOR, speed_color_or
 from core.data_sources import (
@@ -405,9 +409,16 @@ def build_run_payload(
             source_id_col="segment_id",
         )
 
+    foundation_warning = None
     if config.SHOW_FOUNDATION_MODEL_MAP:
         with timed("brussels.foundation_model"):
-            gdf["foundation_model_speed"] = predict_foundation_model_speeds(gdf)
+            # A TabPFN failure leaves the foundation map empty; nothing else is affected.
+            try:
+                gdf["foundation_model_speed"] = predict_foundation_model_speeds(gdf, completed_snapshot_df, token)
+            except Exception as exc:
+                gdf["foundation_model_speed"] = np.nan
+                reason = str(exc) if isinstance(exc, FoundationUnavailable) else type(exc).__name__
+                foundation_warning = f"{UNAVAILABLE_MESSAGE} ({reason})"
 
     on_stage("updating_maps")
     model_estimates_df = enriched_snapshot_df.reindex(
@@ -424,4 +435,5 @@ def build_run_payload(
         ),
         # Model estimates before any demo correction (not displayed).
         model_estimates_df=model_estimates_df,
+        foundation_warning=foundation_warning,
     )

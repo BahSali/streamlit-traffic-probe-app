@@ -117,6 +117,9 @@ def render_diagnostics(payload: dict, google_diagnostics: dict, updating: bool =
     if diagnostics["error_message"]:
         st.warning(diagnostics["error_message"])
 
+    if payload.get("foundation_warning"):
+        st.warning(payload["foundation_warning"])
+
     if google_diagnostics.get("info_message"):
         st.info(google_diagnostics["info_message"])
 
