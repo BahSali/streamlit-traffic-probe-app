@@ -169,10 +169,25 @@ def attach_by_segment_id(predictions: np.ndarray, static: ff.StaticInputs, gdf: 
     return pd.Series(mapped.to_numpy(dtype=float), index=gdf.index)
 
 
+def snapshot_time_of(completed_snapshot_df: pd.DataFrame | None) -> pd.Timestamp | None:
+    """Time of the current STIB snapshot (the input of the features), or None."""
+    if completed_snapshot_df is None or completed_snapshot_df.empty:
+        return None
+    times = completed_snapshot_df["snapshot_time"].dropna()
+    return None if times.empty else pd.Timestamp(times.iloc[0])
+
+
 def predict_foundation_model_speeds(
     gdf: pd.DataFrame, completed_snapshot_df: pd.DataFrame, token: str | None
 ) -> pd.Series:
-    """Estimated speed (km/h) for each row of the Brussels map gdf, aligned to gdf.index.
+    """Estimated speed (km/h) for each row of the Brussels map gdf, aligned to gdf.index."""
+    return predict_with_snapshot(gdf, completed_snapshot_df, token)[0]
+
+
+def predict_with_snapshot(
+    gdf: pd.DataFrame, completed_snapshot_df: pd.DataFrame, token: str | None
+) -> tuple[pd.Series, pd.Timestamp]:
+    """(speed per gdf row, STIB snapshot time the 119 features were built from).
 
     token: the MobilityTwin token (for the lag history). Raises FoundationUnavailable.
     """
@@ -213,7 +228,7 @@ def predict_foundation_model_speeds(
             with timed("tabpfn.map_to_segment_ids"):
                 result = attach_by_segment_id(predictions, static, gdf)
             total["mapped"] = int(result.notna().sum())
-            return result
+            return result, snapshot_time
     except FoundationUnavailable:
         raise
     except Exception as exc:  # network, quota, model, files, ...: never crash the workflow

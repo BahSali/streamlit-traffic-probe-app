@@ -26,6 +26,7 @@ import pandas as pd
 import streamlit as st
 
 from core import config
+from cities.brussels.foundation_job import reset_foundation, retry_allowed
 from cities.brussels.map_data import get_selected_mask, load_brussels_map
 from cities.brussels.speed_layers import build_run_payload
 from cities.brussels.update_job import UpdateJob
@@ -126,6 +127,7 @@ def on_run_clicked() -> None:
     state["brussels_applied_segment_names"] = list(state.get("bru_seg_names", []))
     state["brussels_applied_bus_ids"] = list(state.get("bru_bus_ids", []))
     state["brussels_applied_show_foundation"] = foundation_map_requested()
+    retry_allowed()
     state["brussels_colorized"] = True
     state["brussels_refresh_key"] += 1
     state["brussels_update_job"] = UpdateJob(compute_update, update_inputs()).start()
@@ -145,6 +147,7 @@ def on_reset_clicked() -> None:
     state["brussels_google_fetch"] = None
     state["brussels_google_results_df"] = empty_google_results_df()
     state["brussels_google_diagnostics"] = idle_google_diagnostics(used_count)
+    reset_foundation()
 
 
 def applied_selection() -> tuple[tuple[str, ...], tuple[str, ...]]:

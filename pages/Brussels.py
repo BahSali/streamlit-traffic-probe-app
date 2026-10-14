@@ -22,6 +22,13 @@ import streamlit as st
 
 from cities.brussels.charts import render_brussels_results_visualisation
 from cities.brussels.controls import brussels_left_controls, brussels_run_buttons
+from cities.brussels.foundation_job import (
+    POLL_SECONDS as FOUNDATION_POLL_SECONDS,
+    display_payload,
+    foundation_job,
+    render_foundation_status,
+    sync_foundation,
+)
 from cities.brussels.map_data import get_filter_options
 from cities.brussels.session import (
     apply_update,
@@ -119,8 +126,7 @@ def render_diagnostics(payload: dict, google_diagnostics: dict, updating: bool =
     if diagnostics["error_message"]:
         st.warning(diagnostics["error_message"])
 
-    if payload.get("foundation_warning"):
-        st.warning(payload["foundation_warning"])
+    render_foundation_status(payload)
 
     if google_diagnostics.get("info_message"):
         st.info(google_diagnostics["info_message"])
@@ -247,6 +253,8 @@ with content_box:
     slots["overview"] = st.empty()
 
 previous_payload = st.session_state["brussels_payload"]
+sync_foundation(previous_payload)
+display_payload(previous_payload)
 render_content(slots, previous_payload or build_idle_payload(controls["show_foundation"]), updating=job is not None)
 
 if job is not None:
@@ -280,6 +288,8 @@ if job is not None:
     brussels_run_buttons(controls["buttons_slot"], busy=False, on_run=on_run_clicked, on_reset=on_reset_clicked)
     if job.error is None:
         payload = job.result["payload"]
+        sync_foundation(payload)  # starts this RUN's TabPFN job, if the map is shown
+        display_payload(payload)
         render_content(slots, payload)
         status_slot.caption(f"Maps last updated at {payload['updated_at']:%H:%M:%S} (Brussels time).")
     else:
@@ -293,3 +303,15 @@ elif previous_payload:
     status_slot.caption(f"Maps last updated at {previous_payload['updated_at']:%H:%M:%S} (Brussels time).")
 
 render_unsaved_observations(observation_warning_slot)
+
+
+@st.fragment(run_every=FOUNDATION_POLL_SECONDS)
+def watch_foundation_job() -> None:
+    """While a TabPFN job runs, check on it; rerun the page when it has finished."""
+    current = foundation_job()
+    if current is None or current.done:
+        st.rerun()
+
+
+if foundation_job() is not None:
+    watch_foundation_job()

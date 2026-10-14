@@ -10,10 +10,11 @@ public columns (est_speed on the map, estimated_speed in the table) hold the
 values chosen by core.estimation.correction.displayed_estimates. Only the
 public columns leave this module.
 
-Foundation-model estimates (optional fourth map): only when
-core.config.SHOW_FOUNDATION_MODEL_MAP is True, foundation_model_speed (from
-foundation_model.py) and its FOUNDATION_MODEL_MAP_PROPERTIES are added to the
-map segments. They are not part of the table, charts or CSV download.
+Foundation-model estimates (optional fourth map): when the map is shown,
+foundation_model_speed and its FOUNDATION_MODEL_MAP_PROPERTIES are added to the
+map segments, empty. The values come later from their own background job
+(foundation_job.py) and are filled in with with_foundation_speeds(). They are
+not part of the table, charts or CSV download.
 """
 from __future__ import annotations
 
@@ -30,11 +31,6 @@ from cities.brussels.map_data import (
     attach_segment_metadata,
     build_segment_metadata_df,
     load_brussels_map,
-)
-from cities.brussels.foundation_model import (
-    UNAVAILABLE_MESSAGE,
-    FoundationUnavailable,
-    predict_foundation_model_speeds,
 )
 from core import config
 from core.colors import NO_DATA_COLOR, NO_GOOGLE_DATA_COLOR, speed_color_or
@@ -234,6 +230,26 @@ def map_geometry_json(path: str = MAP_PATH) -> tuple[str, ...]:
     return tuple(shapely.to_geojson(rounded))
 
 
+def with_foundation_speeds(payload: dict, speeds_by_id: dict[str, float]) -> None:
+    """Fill the foundation-model fields of a payload's map data in place (by segment id).
+
+    Same formatting and colour scale as finalize_map_columns. The maps page is
+    rebuilt from the payload on the next render.
+    """
+    data = json.loads(payload["geojson_text"])
+    for feature in data["features"]:
+        props = feature["properties"]
+        value = speeds_by_id.get(str(props["id"]))
+        value = None if value is None or pd.isna(value) else float(value)
+        color = speed_color_or(value, missing_color=NO_DATA_COLOR)
+        props["foundation_model_speed"] = value
+        props["foundation_model_speed_str"] = format_speed(value)
+        props["foundation_model_color"] = color
+        props["foundation_model_highlight_color"] = color
+    payload["geojson_text"] = json.dumps(data)
+    payload["html"] = None
+
+
 def _json_value(value):
     if value is None or (isinstance(value, float) and np.isnan(value)) or value is pd.NA:
         return None
@@ -416,16 +432,10 @@ def build_run_payload(
 
     if include_foundation_model is None:
         include_foundation_model = config.SHOW_FOUNDATION_MODEL_MAP
-    foundation_warning = None
     if include_foundation_model:
-        with timed("brussels.foundation_model"):
-            # A TabPFN failure leaves the foundation map empty; nothing else is affected.
-            try:
-                gdf["foundation_model_speed"] = predict_foundation_model_speeds(gdf, completed_snapshot_df, token)
-            except Exception as exc:
-                gdf["foundation_model_speed"] = np.nan
-                reason = str(exc) if isinstance(exc, FoundationUnavailable) else type(exc).__name__
-                foundation_warning = f"{UNAVAILABLE_MESSAGE} ({reason})"
+        # The TabPFN values arrive later from their own job (foundation_job.py);
+        # the RUN never waits for them.
+        gdf["foundation_model_speed"] = np.nan
 
     on_stage("updating_maps")
     model_estimates_df = enriched_snapshot_df.reindex(
@@ -442,6 +452,5 @@ def build_run_payload(
         ),
         # Model estimates before any demo correction (not displayed).
         model_estimates_df=model_estimates_df,
-        foundation_warning=foundation_warning,
         foundation_shown=include_foundation_model,
     )

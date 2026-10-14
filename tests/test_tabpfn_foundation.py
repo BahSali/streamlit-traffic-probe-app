@@ -245,7 +245,9 @@ def test_inference_reads_no_google_or_stib_history_file(tabpfn, static, monkeypa
 def run_payload(offline_fixture, monkeypatch, show=True):
     monkeypatch.setattr(config, "SHOW_FOUNDATION_MODEL_MAP", show)
     st.cache_data.clear()
-    return run_brussels(offline_fixture)
+    at, features, table = run_brussels(offline_fixture)
+    at = settle(at)
+    return at, map_features(offline_fixture["html"][-1]).set_index("id"), table
 
 
 def test_missing_tabpfn_token_keeps_the_page_working_and_shows_a_warning(offline, monkeypatch):
@@ -258,16 +260,14 @@ def test_missing_tabpfn_token_keeps_the_page_working_and_shows_a_warning(offline
     assert any("TabPFN estimates are unavailable for this run." in w.value for w in at.warning)
 
 
-def test_tabpfn_failure_does_not_crash_build_run_payload(offline, monkeypatch):
+def test_build_run_payload_does_not_run_tabpfn(offline, monkeypatch, tabpfn):
     monkeypatch.setattr(config, "SHOW_FOUNDATION_MODEL_MAP", True)
-    monkeypatch.setattr("cities.brussels.speed_layers.predict_foundation_model_speeds",
-                        lambda *a, **k: (_ for _ in ()).throw(ConnectionError("service down")))
     st.cache_data.clear()
-    payload = build_run_payload(pd.DataFrame(), refresh_key=0)
-    assert payload["foundation_warning"].startswith("TabPFN estimates are unavailable for this run.")
+    payload = build_run_payload(pd.DataFrame(), refresh_key=0, include_foundation_model=True)
+    assert payload["foundation_shown"] is True
+    assert tabpfn.predict_calls == [] and tabpfn.tokens == []  # the RUN never waits for TabPFN
     features = map_features("const data = " + payload["geojson_text"] + ";\n")
-    assert features["foundation_model_speed"].isna().all()
-    assert features["est_speed"].notna().any()
+    assert features["foundation_model_speed"].isna().all() and features["est_speed"].notna().any()
 
 
 def test_successful_prediction_reaches_the_foundation_map(offline, monkeypatch, tabpfn):
@@ -334,7 +334,21 @@ def test_the_cache_holds_predictions_only_never_the_token(tabpfn, static):
 
 # Sidebar toggle ------------------------------------------------------------------------------------
 
-def page_run(offline_fixture, monkeypatch, *, default, toggle, click_run=True):
+def foundation_job_of(at):
+    return at.session_state["brussels_foundation"]["job"]
+
+
+def settle(at, timeout=60):
+    """Wait for the TabPFN job of this session, then rerun the page (as the page's poller does)."""
+    job = foundation_job_of(at)
+    if job is not None:
+        assert job.wait(timeout)
+        at = at.run()
+    assert not at.exception
+    return at
+
+
+def page_run(offline_fixture, monkeypatch, *, default, toggle, click_run=True, wait=True):
     from tests.conftest import app
 
     monkeypatch.setattr(config, "SHOW_FOUNDATION_MODEL_MAP", default)
@@ -347,6 +361,8 @@ def page_run(offline_fixture, monkeypatch, *, default, toggle, click_run=True):
         [run] = [b for b in at.button if b.label == "RUN"]
         at = run.click().run()
         assert not at.exception
+        if wait:
+            at = settle(at)
     return at
 
 
@@ -414,3 +430,157 @@ def test_existing_sidebar_controls_are_unchanged(offline, monkeypatch):
     assert [b.label for b in at.button] == ["RUN", "Reset colorization"]
     assert [t.label for t in at.toggle] == ["Show TabPFN map"]
     assert [s.label for s in at.selectbox] == ["Choose an area"]
+
+
+# Non-blocking TabPFN job and freshness ------------------------------------------------------------
+
+def gate_predict(tabpfn, monkeypatch):
+    """Make the fake remote predict() wait until the returned event is set."""
+    import threading
+
+    gate, real = threading.Event(), tabpfn.predict
+    monkeypatch.setattr(tabpfn, "predict", lambda X: (gate.wait(30), real(X))[1])
+    return gate
+
+
+def foundation_captions(at):
+    return [c.value for c in at.caption if "prediction" in c.value]
+
+
+def test_run_finishes_without_waiting_for_tabpfn_and_the_label_shows_the_snapshot(offline, monkeypatch, tabpfn):
+    gate = gate_predict(tabpfn, monkeypatch)
+    at = page_run(offline, monkeypatch, default=True, toggle=True, wait=False)
+    # The RUN is complete: the other maps are drawn, the TabPFN map is empty and its job is running.
+    features = map_features(offline["html"][-1])
+    assert features["foundation_model_speed"].isna().all() and features["est_speed"].notna().any()
+    assert not foundation_job_of(at).done
+    assert foundation_captions(at) == ["Updating TabPFN prediction for 08:00…"]
+    assert not [b for b in at.button if b.label == "RUN"][0].disabled  # RUN stays usable
+    gate.set()
+    at = settle(at)
+    features = map_features(offline["html"][-1])
+    assert features["foundation_model_speed"].notna().all()
+    # 08:00 is the STIB snapshot of the RUN, not the time the answer arrived.
+    assert foundation_captions(at) == ["TabPFN prediction based on STIB snapshot: 08:00 (Brussels time)"]
+    assert len(tabpfn.predict_calls) == 1
+
+
+def test_a_cached_prediction_is_shown_immediately_on_the_next_run(offline, monkeypatch, tabpfn):
+    at = page_run(offline, monkeypatch, default=True, toggle=True)
+    st.cache_data.clear()
+    [run] = [b for b in at.button if b.label == "RUN"]
+    at = run.click().run()
+    # Shown in the same script run that finishes the RUN, before the new job (a cache hit) ends.
+    assert map_features(offline["html"][-1])["foundation_model_speed"].notna().all()
+    assert "TabPFN prediction based on STIB snapshot: 08:00 (Brussels time)" in foundation_captions(at)
+    assert foundation_job_of(at) is None  # same snapshot as the shown prediction: no new job
+    assert not [c for c in foundation_captions(at) if c.startswith("Updating")]
+    settle(at)
+    assert len(tabpfn.predict_calls) == 1
+
+
+def test_an_older_prediction_stays_labelled_while_a_newer_one_runs(offline, monkeypatch, tabpfn):
+    import core.stib_pipeline as stib_pipeline
+    from tests.conftest import fake_stib_pipeline
+
+    at = page_run(offline, monkeypatch, default=True, toggle=True)  # 08:00 shown
+
+    def later_snapshot(token, gpkg_path, **kwargs):
+        live, completed = fake_stib_pipeline(token, gpkg_path, **kwargs)
+        for frame in (live, completed):
+            frame["snapshot_time"] = frame["snapshot_time"] + pd.Timedelta(minutes=15)
+        return live, completed
+
+    monkeypatch.setattr(stib_pipeline, "run_stib_pipeline", later_snapshot)
+    gate = gate_predict(tabpfn, monkeypatch)
+    st.cache_data.clear()
+    [run] = [b for b in at.button if b.label == "RUN"]
+    at = run.click().run()
+    assert map_features(offline["html"][-1])["foundation_model_speed"].notna().all()  # older values kept
+    assert foundation_captions(at) == [
+        "TabPFN prediction based on STIB snapshot: 08:00 (Brussels time)",
+        "Updating TabPFN prediction for 08:15…",
+    ]
+    gate.set()
+    at = settle(at)
+    assert foundation_captions(at) == ["TabPFN prediction based on STIB snapshot: 08:15 (Brussels time)"]
+    assert len(tabpfn.predict_calls) == 2
+
+
+def test_a_failed_tabpfn_job_warns_keeps_other_maps_and_is_retried_by_run(offline, monkeypatch, tabpfn):
+    real = tabpfn.predict
+    monkeypatch.setattr(tabpfn, "predict", lambda X: (_ for _ in ()).throw(ConnectionError("service down")))
+    at = page_run(offline, monkeypatch, default=True, toggle=True)
+    assert any("TabPFN estimates are unavailable for this run." in w.value for w in at.warning)
+    assert map_features(offline["html"][-1])["est_speed"].notna().any()
+    assert foundation_job_of(at) is None
+    at = at.run()  # an ordinary rerun does not start another job
+    assert foundation_job_of(at) is None
+    monkeypatch.setattr(tabpfn, "predict", real)
+    st.cache_data.clear()
+    [run] = [b for b in at.button if b.label == "RUN"]
+    at = settle(run.click().run())
+    assert not [w for w in at.warning if "TabPFN" in w.value]
+    assert map_features(offline["html"][-1])["foundation_model_speed"].notna().all()
+
+
+def test_toggle_off_starts_no_job_and_shows_no_tabpfn_status(offline, monkeypatch, tabpfn):
+    at = page_run(offline, monkeypatch, default=True, toggle=False, wait=False)
+    assert foundation_job_of(at) is None and tabpfn.predict_calls == []
+    assert foundation_captions(at) == []
+
+
+def test_reset_forgets_the_shown_prediction(offline, monkeypatch, tabpfn):
+    at = page_run(offline, monkeypatch, default=True, toggle=True)
+    assert at.session_state["brussels_foundation"]["shown"] is not None
+    [reset] = [b for b in at.button if b.label == "Reset colorization"]
+    at = reset.click().run()
+    assert at.session_state["brussels_foundation"]["shown"] is None
+    assert foundation_captions(at) == []
+
+
+def test_with_foundation_speeds_patches_the_map_data_by_segment_id():
+    import json
+
+    from cities.brussels.speed_layers import with_foundation_speeds
+
+    features = [{"type": "Feature", "properties": {"id": i}, "geometry": None} for i in (7, 11, 12)]
+    payload = {"geojson_text": json.dumps({"type": "FeatureCollection", "features": features}), "html": "old"}
+    with_foundation_speeds(payload, {"11": 30.0, "12": float("nan")})
+    props = [f["properties"] for f in json.loads(payload["geojson_text"])["features"]]
+    assert [p["foundation_model_speed"] for p in props] == [None, 30.0, None]
+    assert [p["foundation_model_speed_str"] for p in props] == ["N/A", "30.0 km/h", "N/A"]
+    assert props[1]["foundation_model_color"] == props[1]["foundation_model_highlight_color"] != props[0]["foundation_model_color"]
+    assert payload["html"] is None  # rebuilt on the next render
+
+
+def test_concurrent_identical_jobs_share_one_remote_call(tabpfn, static):
+    import threading
+    import time
+
+    X = ff.build_feature_frame(
+        static, snapshot_df(static).set_index("segment_id")["live_speed_kmh"], history_df(static), SNAPSHOT_TIME
+    )
+    calls, gate, results = [], threading.Event(), []
+
+    def slow_remote(features):
+        calls.append(1)
+        gate.wait(10)
+        return np.arange(len(features), dtype=float)
+
+    threads = [
+        threading.Thread(target=lambda: results.append(fm.cached_predict(X, SNAPSHOT_TIME, slow_remote)))
+        for _ in range(2)  # two sessions with the same input
+    ]
+    for t in threads:
+        t.start()
+    deadline = time.time() + 5
+    while not calls and time.time() < deadline:
+        time.sleep(0.01)
+    time.sleep(0.2)  # the second session is waiting for the first
+    gate.set()
+    for t in threads:
+        t.join(10)
+    assert len(calls) == 1 and len(results) == 2
+    np.testing.assert_array_equal(results[0], results[1])
+    assert not fm._key_locks  # no lock left behind
