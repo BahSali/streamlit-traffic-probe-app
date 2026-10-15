@@ -58,4 +58,19 @@ def test_dashboard_renders_for_every_combination(tabpfn, google_every):
     assert not at.exception, [e.value for e in at.exception]
     tabs = [t.label for t in at.tabs]
     assert ("Absolute Error Distribution" in tabs) == (google_every == 2)  # error charts only with a Google reference
-    assert "Street-Level Disagreement" in tabs or "Street-Level Error" in tabs
+    assert "Street-Level Error" in tabs or "Largest Speed Differences" in tabs
+
+
+def test_sources_keep_their_order_and_streets_are_ranked_by_the_chosen_model(monkeypatch):
+    monkeypatch.setattr(cmp, "TOP_STREETS", 2)
+    frame = cmp.build_frame(snapshot(google_every=1), {str(i): 22.0 + i % 9 for i in range(40)})
+    errors = cmp.reference_errors(frame)
+    assert list(errors["source"].drop_duplicates()) == ["stib", "primary", "tabpfn"]
+    assert list(cmp.error_summary(errors).index) == ["stib", "primary", "tabpfn"]
+
+    tabpfn_mae = errors[errors["source"] == "tabpfn"].groupby("segment_name")["abs_error"].mean().sort_values()
+    highest = cmp.street_errors(errors, "tabpfn", highest=True)
+    lowest = cmp.street_errors(errors, "tabpfn", highest=False)
+    assert set(highest["street"]) == set(tabpfn_mae.index[-2:])
+    assert set(lowest["street"]) == set(tabpfn_mae.index[:2])
+    assert set(highest["source"]) == {"stib", "primary", "tabpfn"}  # the other sources are shown beside it

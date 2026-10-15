@@ -3,12 +3,12 @@
 No Streamlit and no drawing here, so the rules for which sources and which
 segments are compared live in one place (drawing is charts.py).
 
-Sources: STIB (observed probe speed, not ground truth), the Primary Model,
+Sources: STIB (observed probe speed, not ground truth), the Traffic Estimation Model,
 TabPFN (only when its prediction is shown on the maps) and Google. Google is
 the reference when there is enough of it (MIN_REFERENCE_ROWS segments).
 
 Samples (each statistic says how many segments it uses):
-- the models (Primary, TabPFN) are compared with Google on the segments where
+- the models (Traffic Estimation Model, TabPFN) are compared with Google on the segments where
   all of them and Google have a value, so they are directly comparable;
 - STIB is compared with Google on its own segments (a different sample).
 Without Google the sources are only compared with each other, pair by pair.
@@ -33,7 +33,7 @@ TOP_STREETS = 15
 def source_label(key: str) -> str:
     return {
         "stib": "STIB",
-        "primary": "Primary Model",
+        "primary": "Traffic Estimation Model",
         "tabpfn": config.FOUNDATION_MODEL_NAME,
         "google": "Google",
     }[key]
@@ -84,11 +84,14 @@ def reference_errors(frame: pd.DataFrame) -> pd.DataFrame:
     available = available_sources(frame)
     with_google = frame[frame["google"].notna()]
     models = [key for key in MODELS if key in available]
+    model_sample = with_google.dropna(subset=models) if models else None
+    # Built in SOURCES order, so every chart lists the sources the same way.
     samples = {}
-    if models:
-        samples.update({key: with_google.dropna(subset=models) for key in models})
-    if "stib" in available:
-        samples["stib"] = with_google.dropna(subset=["stib"])
+    for key in SOURCES:
+        if key in models:
+            samples[key] = model_sample
+        elif key == "stib" and key in available:
+            samples[key] = with_google.dropna(subset=["stib"])
     parts = [
         sample[["segment_id", "segment_name", "google"]].assign(source=key, speed=sample[key])
         for key, sample in samples.items()
@@ -121,7 +124,7 @@ def error_summary(errors: pd.DataFrame) -> pd.DataFrame:
 
 
 def source_pairs(frame: pd.DataFrame) -> dict[tuple[str, str], pd.DataFrame]:
-    """Segments where two sources have a value, as x/y tables: STIB, Primary, TabPFN taken two at a time."""
+    """Segments where two sources have a value, as x/y tables: STIB, Traffic Estimation Model, TabPFN taken two at a time."""
     keys = [key for key in available_sources(frame) if key != "google"]
     pairs = {}
     for x_key, y_key in combinations(keys, 2):
@@ -143,20 +146,25 @@ def difference_summary(pairs: dict[tuple[str, str], pd.DataFrame]) -> pd.DataFra
     return pd.DataFrame.from_dict(rows, orient="index")
 
 
-def street_errors(errors: pd.DataFrame) -> pd.DataFrame:
-    """MAE per street (segment_name) and model, for the TOP_STREETS streets with the highest mean model MAE.
+def street_errors(errors: pd.DataFrame, rank_by: str, highest: bool = True) -> pd.DataFrame:
+    """MAE vs Google per street (segment_name) and source, for the TOP_STREETS streets with the highest
+    (or lowest) MAE of the rank_by source (a model key).
 
-    Columns: street, source, mae, segments (all segments of the street in the sample).
+    Columns: street, source, mae, segments (of that source in the street), rank_mae, rank_segments (of rank_by),
+    in SOURCES order.
     """
-    models = errors[errors["source"].isin(MODELS)]
     street = (
-        models.groupby(["segment_name", "source"])["abs_error"]
+        errors.groupby(["segment_name", "source"], sort=False)["abs_error"]
         .agg(mae="mean", segments="size")
         .reset_index()
         .rename(columns={"segment_name": "street"})
     )
-    worst = street.groupby("street")["mae"].mean().nlargest(TOP_STREETS).index
-    return street[street["street"].isin(worst)]
+    ranked = street[street["source"] == rank_by].set_index("street")
+    chosen = ranked["mae"].nlargest(TOP_STREETS) if highest else ranked["mae"].nsmallest(TOP_STREETS)
+    street = street[street["street"].isin(chosen.index)]
+    return street.assign(
+        rank_mae=street["street"].map(ranked["mae"]), rank_segments=street["street"].map(ranked["segments"])
+    )
 
 
 def street_spread(frame: pd.DataFrame) -> pd.DataFrame:

@@ -45,6 +45,15 @@ def inject_styles():
         background-color: #005F56;
     }
 
+    /* Performance Analysis summary (cities/brussels/charts.py): smaller values, labels that wrap. */
+    div[class*="st-key-bru_summary"] [data-testid="stMetricValue"] {
+        font-size: 1.6rem;
+    }
+    div[class*="st-key-bru_summary"] [data-testid="stMetricLabel"] p {
+        font-size: 0.85rem;
+        white-space: normal;
+    }
+
     /* The speed legend (core.colors.legend_html) stays to the right of the map
        whenever the screen is wider than a phone: its column keeps the width of
        its labels and the map column shrinks instead of the row wrapping. */

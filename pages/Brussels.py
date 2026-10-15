@@ -181,7 +181,9 @@ def render_content(slots: dict, payload: dict, updating: bool = False) -> None:
     with slots["analysis"].container():
         if has_results:
             with timed("brussels.charts"):
-                render_brussels_results_visualisation(enriched_snapshot_df, displayed_speeds(payload))
+                render_brussels_results_visualisation(
+                    enriched_snapshot_df, displayed_speeds(payload), payload["result_id"]
+                )
 
     with slots["results"].container():
         if has_results:
