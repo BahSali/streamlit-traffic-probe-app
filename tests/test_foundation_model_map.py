@@ -105,7 +105,7 @@ def test_brussels_page_with_and_without_foundation_model_map(offline, monkeypatc
 
     # On: four maps, Bus | Estimated / Chronos | Google.
     assert map_divs(on_html) == ["map1", "map2", "map3", "map4"]
-    assert panel_titles(on_html)[2] == "Chronos Estimate"
+    assert panel_titles(on_html)[2].startswith("Chronos Estimate")  # may carry a status (updating / unavailable)
     assert foundation_name(on_html) == "Chronos"
     # No TabPFN token in the test environment: the map is empty ("N/A"), never a made-up speed.
     assert on_features["foundation_model_speed"].isna().all()

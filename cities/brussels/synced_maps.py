@@ -19,6 +19,9 @@ MAP_HEIGHT_ONE_ROW = 520
 MAP_HEIGHT_TWO_ROWS = 420
 
 
+FOUNDATION_UPDATING_STYLE = "<style>#map3 { opacity: 0.5; transition: opacity 0.3s; }</style>\n"
+
+
 def _script_json(value) -> str:
     # "<\/" keeps text such as "</script>" from closing the script tag.
     return json.dumps(value).replace("</", "<\\/")
@@ -30,8 +33,15 @@ def build_synced_maps_html(
     center_lon,
     estimate_title: str = "Estimated Speeds (Model)",
     foundation_model_name: str | None = None,
+    foundation_status: str | None = None,
+    foundation_updating: bool = False,
 ) -> str:
-    """Page with the synced maps; foundation_model_name=None gives the three-map row."""
+    """Page with the synced maps; foundation_model_name=None gives the three-map row.
+
+    foundation_status: short text after the foundation panel's title (e.g. which
+    STIB snapshot it shows). foundation_updating: the panel's prediction is being
+    updated, so its map is dimmed.
+    """
     # (title, colour property, tooltip kind in synced_maps.html)
     panels = [
         ("Bus Speeds (STIB)", "bus_color", "bus"),
@@ -39,7 +49,8 @@ def build_synced_maps_html(
         ("Google API Speeds", "google_color", "google"),
     ]
     if foundation_model_name:
-        panels.insert(2, (f"{foundation_model_name} Estimate", "foundation_model_color", "foundation"))
+        title = f"{foundation_model_name} Estimate" + (f" {foundation_status}" if foundation_status else "")
+        panels.insert(2, (title, "foundation_model_color", "foundation"))
         rows = [panels[:2], panels[2:]]
         map_height = MAP_HEIGHT_TWO_ROWS
     else:
@@ -65,7 +76,7 @@ def build_synced_maps_html(
     # The name is shown as HTML in the tooltips.
     foundation_label = html.escape(foundation_model_name) if foundation_model_name else None
 
-    return (
+    page = (
         TEMPLATE_PATH.read_text(encoding="utf-8")
         .replace("__GRID_COLUMNS__", " ".join(["1fr"] * len(rows[0])))
         .replace("__MAP_HEIGHT__", str(map_height))
@@ -77,6 +88,10 @@ def build_synced_maps_html(
         # "<\/" keeps text such as "</script>" in a street name from closing the script tag.
         .replace("__GEOJSON__", geojson_text.replace("</", "<\\/"))
     )
+    if foundation_model_name and foundation_updating:
+        # The foundation map is the third panel (map3): dimmed while it updates.
+        page = page.replace("</head>", FOUNDATION_UPDATING_STYLE + "</head>", 1)
+    return page
 
 
 def build_three_map_html(

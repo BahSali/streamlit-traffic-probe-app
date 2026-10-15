@@ -26,6 +26,7 @@ from cities.brussels.foundation_job import (
     POLL_SECONDS as FOUNDATION_POLL_SECONDS,
     display_payload,
     foundation_job,
+    foundation_map_status,
     render_foundation_status,
     sync_foundation,
 )
@@ -147,7 +148,10 @@ def render_content(slots: dict, payload: dict, updating: bool = False) -> None:
     with slots["diagnostics"].container():
         render_diagnostics(payload, google_diagnostics, updating=updating)
 
-    if payload.get("html") is None:
+    # The foundation panel's status (updating / which snapshot) is part of the page,
+    # so the page is rebuilt when it changes.
+    foundation_status = foundation_map_status(payload)
+    if payload.get("html") is None or payload.get("html_foundation_status") != foundation_status:
         with timed("brussels.maps_html") as log:
             payload["html"] = build_synced_maps_html(
                 payload["geojson_text"],
@@ -155,7 +159,10 @@ def render_content(slots: dict, payload: dict, updating: bool = False) -> None:
                 payload["center_lon"],
                 estimate_title=ESTIMATE_MAP_TITLE,
                 foundation_model_name=FOUNDATION_MODEL_NAME if payload.get("foundation_shown") else None,
+                foundation_status=foundation_status[0],
+                foundation_updating=foundation_status[1],
             )
+            payload["html_foundation_status"] = foundation_status
             log["bytes"] = len(payload["html"])
     with slots["maps"].container():
         show_map_with_legend(

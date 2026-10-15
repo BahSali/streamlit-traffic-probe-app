@@ -175,3 +175,21 @@ def render_foundation_status(payload: dict | None) -> None:
     elif state["error"]:
         logger.warning("%s prediction unavailable: %s", name, state["error"])
         st.warning(f"{UNAVAILABLE_MESSAGE} ({state['error']})")
+
+
+def foundation_map_status(payload: dict | None) -> tuple[str | None, bool]:
+    """(text after the foundation map's title, whether the map is being updated).
+
+    On the map itself, so it is clear which panel is updating and which STIB
+    snapshot it shows.
+    """
+    if payload is None or not payload.get("foundation_shown"):
+        return None, False
+    state = foundation_state()
+    if state["job"] is not None:
+        return f"\u2014 updating for {format_snapshot_time(state['running_for'])}\u2026", True
+    if state["shown"] is not None:
+        return f"(STIB {format_snapshot_time(state['shown']['snapshot_time'])})", False
+    if state["error"]:
+        return "\u2014 unavailable", False
+    return None, False

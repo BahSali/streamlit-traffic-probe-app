@@ -443,6 +443,12 @@ def gate_predict(tabpfn, monkeypatch):
     return gate
 
 
+def foundation_titles(html):
+    import re
+
+    return re.findall(r"^      <div>(.*)</div>$", html, re.M)
+
+
 def foundation_captions(at):
     return [c.value for c in at.caption if "prediction" in c.value]
 
@@ -455,6 +461,11 @@ def test_run_finishes_without_waiting_for_tabpfn_and_the_label_shows_the_snapsho
     assert features["foundation_model_speed"].isna().all() and features["est_speed"].notna().any()
     assert not foundation_job_of(at).done
     assert foundation_captions(at) == ["Updating TabPFN prediction for 08:00…"]
+    # The TabPFN map itself says it is updating (and is dimmed); the other panels are unchanged.
+    assert foundation_titles(offline["html"][-1]) == [
+        "Bus Speeds (STIB)", "Estimated Speeds", "TabPFN Estimate \u2014 updating for 08:00\u2026", "Google API Speeds",
+    ]
+    assert "#map3 { opacity: 0.5;" in offline["html"][-1]
     assert not [b for b in at.button if b.label == "RUN"][0].disabled  # RUN stays usable
     gate.set()
     at = settle(at)
@@ -462,6 +473,8 @@ def test_run_finishes_without_waiting_for_tabpfn_and_the_label_shows_the_snapsho
     assert features["foundation_model_speed"].notna().all()
     # 08:00 is the STIB snapshot of the RUN, not the time the answer arrived.
     assert foundation_captions(at) == ["TabPFN prediction based on STIB snapshot: 08:00 (Brussels time)"]
+    assert foundation_titles(offline["html"][-1])[2] == "TabPFN Estimate (STIB 08:00)"
+    assert "#map3 { opacity" not in offline["html"][-1]  # no longer dimmed
     assert len(tabpfn.predict_calls) == 1
 
 
@@ -501,8 +514,10 @@ def test_an_older_prediction_stays_labelled_while_a_newer_one_runs(offline, monk
         "TabPFN prediction based on STIB snapshot: 08:00 (Brussels time)",
         "Updating TabPFN prediction for 08:15…",
     ]
+    assert foundation_titles(offline["html"][-1])[2] == "TabPFN Estimate \u2014 updating for 08:15\u2026"
     gate.set()
     at = settle(at)
+    assert foundation_titles(offline["html"][-1])[2] == "TabPFN Estimate (STIB 08:15)"
     assert foundation_captions(at) == ["TabPFN prediction based on STIB snapshot: 08:15 (Brussels time)"]
     assert len(tabpfn.predict_calls) == 2
 
@@ -584,3 +599,20 @@ def test_concurrent_identical_jobs_share_one_remote_call(tabpfn, static):
     assert len(calls) == 1 and len(results) == 2
     np.testing.assert_array_equal(results[0], results[1])
     assert not fm._key_locks  # no lock left behind
+
+
+def test_synced_maps_mark_the_foundation_panel_only_when_it_is_updating():
+    from cities.brussels.synced_maps import build_synced_maps_html
+
+    geojson = '{"type": "FeatureCollection", "features": []}'
+    plain = build_synced_maps_html(geojson, 50.8, 4.35, foundation_model_name="TabPFN")
+    shown = build_synced_maps_html(geojson, 50.8, 4.35, foundation_model_name="TabPFN", foundation_status="(STIB 14:30)")
+    busy = build_synced_maps_html(
+        geojson, 50.8, 4.35, foundation_model_name="TabPFN", foundation_status="updating", foundation_updating=True
+    )
+    assert foundation_titles(plain)[2] == "TabPFN Estimate" and "#map3 {" not in plain
+    assert foundation_titles(shown)[2] == "TabPFN Estimate (STIB 14:30)" and "#map3 {" not in shown
+    assert foundation_titles(busy)[2] == "TabPFN Estimate updating" and "#map3 { opacity: 0.5;" in busy
+    # The three-map layout ignores the foundation options.
+    three = build_synced_maps_html(geojson, 50.8, 4.35, foundation_status="x", foundation_updating=True)
+    assert "#map3 {" not in three and len(foundation_titles(three)) == 3
