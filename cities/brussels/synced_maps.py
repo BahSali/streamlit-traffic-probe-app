@@ -19,7 +19,13 @@ MAP_HEIGHT_ONE_ROW = 520
 MAP_HEIGHT_TWO_ROWS = 420
 
 
-FOUNDATION_UPDATING_STYLE = "<style>#map3 { opacity: 0.5; transition: opacity 0.3s; }</style>\n"
+UPDATING_SUFFIX = "\u2014 updating\u2026"
+
+
+def _updating_style(map_ids: list[str]) -> str:
+    """Dim the maps that are loading."""
+    selector = ", ".join(f"#{map_id}" for map_id in map_ids)
+    return f"<style>{selector} {{ opacity: 0.5; transition: opacity 0.3s; }}</style>\n"
 
 
 def _script_json(value) -> str:
@@ -35,22 +41,26 @@ def build_synced_maps_html(
     foundation_model_name: str | None = None,
     foundation_status: str | None = None,
     foundation_updating: bool = False,
+    updating: bool = False,
 ) -> str:
     """Page with the synced maps; foundation_model_name=None gives the three-map row.
 
     foundation_status: short text after the foundation panel's title (e.g. which
     STIB snapshot it shows). foundation_updating: the panel's prediction is being
-    updated, so its map is dimmed.
+    updated, so its map is dimmed. updating: a RUN is in progress, so every panel
+    says "updating" and every map is dimmed.
     """
-    # (title, colour property, tooltip kind in synced_maps.html)
+    # (title, colour property, tooltip kind in synced_maps.html, loading)
+    suffix = f" {UPDATING_SUFFIX}" if updating else ""
     panels = [
-        ("Bus Speeds (STIB)", "bus_color", "bus"),
-        (estimate_title, "est_color", "estimated"),
-        ("Google API Speeds", "google_color", "google"),
+        ("Bus Speeds (STIB)" + suffix, "bus_color", "bus", updating),
+        (estimate_title + suffix, "est_color", "estimated", updating),
+        ("Google API Speeds" + suffix, "google_color", "google", updating),
     ]
     if foundation_model_name:
-        title = f"{foundation_model_name} Estimate" + (f" {foundation_status}" if foundation_status else "")
-        panels.insert(2, (title, "foundation_model_color", "foundation"))
+        text = UPDATING_SUFFIX if updating else foundation_status
+        title = f"{foundation_model_name} Estimate" + (f" {text}" if text else "")
+        panels.insert(2, (title, "foundation_model_color", "foundation", updating or foundation_updating))
         rows = [panels[:2], panels[2:]]
         map_height = MAP_HEIGHT_TWO_ROWS
     else:
@@ -60,7 +70,7 @@ def build_synced_maps_html(
     rows_html = []
     number = 0
     for row in rows:
-        titles = "\n".join(f"      <div>{html.escape(title)}</div>" for title, _, _ in row)
+        titles = "\n".join(f"      <div>{html.escape(title)}</div>" for title, _, _, _ in row)
         maps = []
         for _ in row:
             number += 1
@@ -71,7 +81,7 @@ def build_synced_maps_html(
         )
     panel_config = [
         {"id": f"map{i}", "colorKey": color_key, "tooltip": tooltip}
-        for i, (_, color_key, tooltip) in enumerate(panels, start=1)
+        for i, (_, color_key, tooltip, _) in enumerate(panels, start=1)
     ]
     # The name is shown as HTML in the tooltips.
     foundation_label = html.escape(foundation_model_name) if foundation_model_name else None
@@ -88,9 +98,9 @@ def build_synced_maps_html(
         # "<\/" keeps text such as "</script>" in a street name from closing the script tag.
         .replace("__GEOJSON__", geojson_text.replace("</", "<\\/"))
     )
-    if foundation_model_name and foundation_updating:
-        # The foundation map is the third panel (map3): dimmed while it updates.
-        page = page.replace("</head>", FOUNDATION_UPDATING_STYLE + "</head>", 1)
+    loading_ids = [f"map{i}" for i, panel in enumerate(panels, start=1) if panel[3]]
+    if loading_ids:
+        page = page.replace("</head>", _updating_style(loading_ids) + "</head>", 1)
     return page
 
 

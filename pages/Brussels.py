@@ -4,7 +4,9 @@ core.config.SHOW_FOUNDATION_MODEL_MAP, applied by RUN).
 
 Each script run:
   1. draws the controls and the content slots, filled with the last RUN's
-     result (unchanged, so the maps neither fade nor reload);
+     result; from the moment RUN is pressed every map is dimmed and titled
+     "updating…" until its data arrives (the TabPFN map later, see
+     foundation_job.py);
   2. while this session's update is running (started by RUN in a background
      job, see cities/brussels/update_job.py), shows its stages in a status
      box under the disabled RUN button: Google speeds (session.py), bus data
@@ -148,10 +150,11 @@ def render_content(slots: dict, payload: dict, updating: bool = False) -> None:
     with slots["diagnostics"].container():
         render_diagnostics(payload, google_diagnostics, updating=updating)
 
-    # The foundation panel's status (updating / which snapshot) is part of the page,
-    # so the page is rebuilt when it changes.
+    # The panels' status (updating / which snapshot) is part of the page, so the
+    # page is rebuilt when it changes.
     foundation_status = foundation_map_status(payload)
-    if payload.get("html") is None or payload.get("html_foundation_status") != foundation_status:
+    page_status = (foundation_status, updating)
+    if payload.get("html") is None or payload.get("html_status") != page_status:
         with timed("brussels.maps_html") as log:
             payload["html"] = build_synced_maps_html(
                 payload["geojson_text"],
@@ -161,8 +164,9 @@ def render_content(slots: dict, payload: dict, updating: bool = False) -> None:
                 foundation_model_name=FOUNDATION_MODEL_NAME if payload.get("foundation_shown") else None,
                 foundation_status=foundation_status[0],
                 foundation_updating=foundation_status[1],
+                updating=updating,
             )
-            payload["html_foundation_status"] = foundation_status
+            payload["html_status"] = page_status
             log["bytes"] = len(payload["html"])
     with slots["maps"].container():
         show_map_with_legend(

@@ -616,3 +616,51 @@ def test_synced_maps_mark_the_foundation_panel_only_when_it_is_updating():
     # The three-map layout ignores the foundation options.
     three = build_synced_maps_html(geojson, 50.8, 4.35, foundation_status="x", foundation_updating=True)
     assert "#map3 {" not in three and len(foundation_titles(three)) == 3
+
+
+# Every map shows the loading state from the moment RUN is pressed ----------------------------------
+
+UPDATING = "— updating…"
+
+
+def test_synced_maps_dim_and_mark_every_panel_while_a_run_updates():
+    from cities.brussels.synced_maps import build_synced_maps_html
+
+    geojson = '{"type": "FeatureCollection", "features": []}'
+    four = build_synced_maps_html(geojson, 50.8, 4.35, foundation_model_name="TabPFN", updating=True)
+    assert foundation_titles(four) == [
+        f"Bus Speeds (STIB) {UPDATING}", f"Estimated Speeds (Model) {UPDATING}",
+        f"TabPFN Estimate {UPDATING}", f"Google API Speeds {UPDATING}",
+    ]
+    assert "#map1, #map2, #map3, #map4 { opacity: 0.5;" in four
+    three = build_synced_maps_html(geojson, 50.8, 4.35, updating=True)
+    assert [t.endswith(UPDATING) for t in foundation_titles(three)] == [True, True, True]
+    assert "#map1, #map2, #map3 { opacity: 0.5;" in three
+    idle = build_synced_maps_html(geojson, 50.8, 4.35, foundation_model_name="TabPFN")
+    assert UPDATING not in idle and "opacity: 0.5" not in idle
+
+
+def test_every_map_is_loading_from_the_run_click_until_its_data_arrives(offline, monkeypatch, tabpfn):
+    gate = gate_predict(tabpfn, monkeypatch)
+    page_run(offline, monkeypatch, default=True, toggle=True, wait=False)
+    pages = offline["html"]
+    # Rendered right after RUN was pressed (before any new data): all four maps loading.
+    started = [h for h in pages if foundation_titles(h)[0].endswith(UPDATING)]
+    assert started and all(t.endswith(UPDATING) for t in foundation_titles(started[-1]))
+    assert "#map1, #map2, #map3, #map4 { opacity: 0.5;" in started[-1]
+    # RUN finished: Bus / Primary / Google are done; only the TabPFN map is still loading.
+    final = pages[-1]
+    assert foundation_titles(final) == [
+        "Bus Speeds (STIB)", "Estimated Speeds", f"TabPFN Estimate — updating for 08:00…", "Google API Speeds",
+    ]
+    assert "<style>#map3 { opacity: 0.5;" in final  # only that map is dimmed
+    gate.set()
+
+
+def test_the_three_map_layout_is_loading_from_the_run_click_too(offline, monkeypatch, tabpfn):
+    page_run(offline, monkeypatch, default=True, toggle=False)
+    pages = offline["html"]
+    started = [h for h in pages if foundation_titles(h) and foundation_titles(h)[0].endswith(UPDATING)]
+    assert started and len(foundation_titles(started[-1])) == 3
+    assert "#map1, #map2, #map3 { opacity: 0.5;" in started[-1]
+    assert UPDATING not in pages[-1] and "opacity: 0.5" not in pages[-1]  # all loaded
