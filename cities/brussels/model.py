@@ -778,11 +778,18 @@ def fetch_segment_snapshots_for_multiple_buckets(
     # whole-day file (~2.3M rows), and fetching them in parallel measured
     # 0.9 GB (2 at once) to 1.8 GB (5 at once) of extra memory instead of 0.4 GB.
     for window_start, window_end, bucket_group in grouped_windows:
-        raw_speed_df = fetch_raw_bucket_speeds(
-            token=token,
-            window_start_iso=window_start.isoformat(),
-            window_end_iso=window_end.isoformat(),
-        )
+        with timed(
+            "mobilitytwin.history_window",
+            start=window_start.isoformat(),
+            end=window_end.isoformat(),
+            buckets=len(bucket_group),
+        ) as window_log:
+            raw_speed_df = fetch_raw_bucket_speeds(
+                token=token,
+                window_start_iso=window_start.isoformat(),
+                window_end_iso=window_end.isoformat(),
+            )
+            window_log["rows"] = len(raw_speed_df)
 
         if raw_speed_df.empty:
             continue
