@@ -7,7 +7,7 @@ comes from the current RUN: the speeds of the Traffic Estimation Model, TabPFN
 Travel time of a segment:
 - Traffic Estimation Model, TabPFN: t = 3.6 * L / v  (seconds; L in metres, v in km/h);
 - Google: its reported duration in seconds.
-A section's time is the sum of its segments' times.
+A section's time is the sum of its segments' times. Times are shown as seconds first, then minutes.
 
 A section is a connected, ordered run of segments of one direction (chained
 on the segments' node ids). Scattered segments are separate sections, and a
@@ -24,11 +24,11 @@ from functools import lru_cache
 
 import pandas as pd
 
+from cities.brussels import comparison as cmp
 from cities.brussels.map_data import get_selected_mask, load_brussels_map
 
 METRIC_CRS = 31370  # Belgian Lambert 72: lengths in metres
-SOURCES = ("primary", "tabpfn", "google")  # display order (same as comparison.SOURCES)
-TOP_CONTRIBUTORS = 8
+SOURCES = ("google", "primary", "tabpfn")  # display order: Google where STIB is in the other charts
 MAX_SEGMENTS = 200  # more than this is too many blocks to draw
 
 
@@ -168,30 +168,24 @@ def section_summary(table: pd.DataFrame, only_lines: set[str] | None = None) -> 
     return pd.DataFrame(rows)
 
 
-def contributions(table: pd.DataFrame, top: int = TOP_CONTRIBUTORS) -> list[dict]:
-    """Which segments make up the travel-time difference of each model, over the common basis.
+def format_time(seconds: float) -> str:
+    """Seconds first, minutes second: `125 s (2.08 min)`."""
+    return "no value" if pd.isna(seconds) else f"{seconds:,.0f} s ({seconds / 60:.2f} min)"
 
-    Reference: Google when shown, else the Traffic Estimation Model (then only TabPFN is compared).
-    Each entry: model, reference, bars (label, delta seconds, segments), total difference, n segments.
-    """
-    sources = table.attrs["sources"]
-    reference = "google" if "google" in sources else "primary"
-    basis = table[table["in_basis"]]
-    out = []
-    for model in ("primary", "tabpfn"):
-        if model not in sources or model == reference or len(basis) < 2:
-            continue
-        delta = (basis[f"time_{model}"] - basis[f"time_{reference}"]).rename("delta")
-        ranked = basis.assign(delta=delta).reindex(delta.abs().sort_values(ascending=False).index)
-        bars = pd.DataFrame(
-            {
-                "label": ranked["segment_name"].head(top) + " · " + ranked["segment_id"].head(top),
-                "delta": ranked["delta"].head(top),
-                "segments": 1,
-            }
-        ).reset_index(drop=True)
-        rest = ranked.iloc[top:]
-        if len(rest):
-            bars.loc[len(bars)] = [f"All other segments ({len(rest)})", rest["delta"].sum(), len(rest)]
-        out.append({"model": model, "reference": reference, "bars": bars.reset_index(drop=True), "total": float(delta.sum()), "n": len(basis)})
+
+def export_table(table: pd.DataFrame) -> pd.DataFrame:
+    """The segment-level data behind the strips, for the CSV download (available sources only)."""
+    out = pd.DataFrame(
+        {
+            "segment_id": table["segment_id"],
+            "street_name": table["segment_name"],
+            "section": table["section"],
+            "length_m": table["length_m"].round(1),
+        }
+    )
+    for key in table.attrs["sources"]:
+        name = cmp.source_label(key).lower().replace(" ", "_")
+        out[f"{name}_speed_kmh"] = table[f"speed_{key}"].round(2)
+        out[f"{name}_time_s"] = table[f"time_{key}"].round(1)
+    out["used_in_totals"] = table["in_basis"]
     return out

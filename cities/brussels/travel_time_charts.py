@@ -1,10 +1,9 @@
 """Brussels "Travel Time": the travel time of road segments and connected sections, per source.
 
-Data and rules: travel_time.py. One strip per source (Traffic Estimation Model,
-TabPFN when shown, Google when it has values): each block is a segment, as wide
+Data and rules: travel_time.py. One strip per source (Google when it has values,
+Traffic Estimation Model, TabPFN when shown): each block is a segment, as wide
 as its length and coloured by speed (the maps' scale); the total travel time is
-at the end of the strip. Under it, which segments make up the difference between
-the models.
+at the end of the strip, in seconds and minutes.
 """
 from __future__ import annotations
 
@@ -14,7 +13,7 @@ import streamlit as st
 
 from cities.brussels import comparison as cmp
 from cities.brussels import travel_time as tt
-from cities.brussels.charts import SOURCE_COLORS, _show, _title
+from cities.brussels.charts import _show, _title
 from core.colors import LEGEND_RANGES, get_speed_color, speed_color_or
 
 NO_VALUE_COLOR = "#e5e7eb"
@@ -45,7 +44,7 @@ def render_travel_time(results_df: pd.DataFrame, tabpfn_speeds: dict[str, float]
     st.latex(r"t = 3.6 \cdot \frac{L}{v} \qquad T = \sum t")
     st.caption(
         "t: segment travel time (s) · L: segment length (m) · v: speed (km/h) · T: total (s). "
-        "For Google, t is its reported duration (s)."
+        "For Google, t is its reported duration (s). Minutes = seconds / 60."
     )
     basis = table[table["in_basis"]]
     covered = f"{len(basis)} of {_count(len(table), 'segment')} ({100 * basis['length_m'].sum() / table['length_m'].sum():.0f}% of length)"
@@ -62,7 +61,13 @@ def render_travel_time(results_df: pd.DataFrame, tabpfn_speeds: dict[str, float]
         st.caption("Σ is the sum of the separate sections' times, not the time of one trip.")
         only_lines = {scope} if scope != SELECTION else set(selection[1])
         _section_table(table, sources, totals, only_lines)
-    _contributions(table)
+    st.download_button(
+        "Download segment travel times",
+        data=tt.export_table(table).to_csv(index=False).encode("utf-8"),
+        file_name="travel_time_segments.csv",
+        mime="text/csv",
+        key=f"bru_travel_csv_{key}",
+    )
 
 
 def _count(n: int, noun: str) -> str:
@@ -105,7 +110,7 @@ def _strips(table: pd.DataFrame, sources: list[str], totals: dict[str, float], s
                     "section": table["section"],
                     "length": table["length_m"].round().astype(int),
                     "speed": table[f"speed_{k}"].map(lambda v: "no value" if pd.isna(v) else f"{v:.1f} km/h"),
-                    "time": table[f"time_{k}"].map(lambda v: "no value" if pd.isna(v) else f"{v:,.0f} s"),
+                    "time": table[f"time_{k}"].map(tt.format_time),
                 }
             )
             for k in sources
@@ -121,7 +126,7 @@ def _strips(table: pd.DataFrame, sources: list[str], totals: dict[str, float], s
             x=alt.X(
                 "x0:Q",
                 title="Distance along the segments (km; gaps between sections are not to scale)",
-                scale=alt.Scale(domain=[0, x_end * 1.12], nice=False),
+                scale=alt.Scale(domain=[0, x_end * 1.25], nice=False),
                 axis=alt.Axis(grid=False),
             ),
             x2="x1:Q",
@@ -138,10 +143,10 @@ def _strips(table: pd.DataFrame, sources: list[str], totals: dict[str, float], s
         )
     )
     prefix = "Σ " if sections > 1 else ""
-    ends = pd.DataFrame({"source": labels, "x": x_end, "label": [f"{prefix}{totals.get(k, float('nan')):,.0f} s" for k in sources]})
+    ends = pd.DataFrame({"source": labels, "x": x_end, "label": [prefix + tt.format_time(totals.get(k, float("nan"))) for k in sources]})
     text = (
         alt.Chart(ends)
-        .mark_text(align="left", dx=6, fontSize=13, fontWeight="bold", color="#1F2937")
+        .mark_text(align="left", dx=6, fontSize=12, fontWeight="bold", color="#1F2937")
         .encode(x=alt.X("x:Q"), y=alt.Y("source:N", sort=labels), text="label:N")
     )
     layers = rects + text
@@ -172,45 +177,10 @@ def _section_table(table: pd.DataFrame, sources: list[str], totals: dict[str, fl
     total_row = {"Section": "Σ sum of sections (not one trip)", "Segments": len(table), "Length (km)": table["length_m"].sum() / 1000}
     total_row.update({k: totals[k] for k in sources})
     summary = pd.concat([summary, pd.DataFrame([total_row])], ignore_index=True)
-    summary = summary.rename(columns={k: f"{cmp.source_label(k)} (s)" for k in sources})
-    seconds = [f"{cmp.source_label(k)} (s)" for k in sources]
+    for k in sources:  # seconds first, then minutes
+        summary[k] = summary[k].map(tt.format_time)
     st.dataframe(
-        summary.round({"Length (km)": 1, **{column: 0 for column in seconds}}).astype({"Segments": int}),
+        summary.rename(columns={k: cmp.source_label(k) for k in sources}).round({"Length (km)": 1}).astype({"Segments": int}),
         width="stretch",
         hide_index=True,
     )
-
-
-def _contributions(table: pd.DataFrame) -> None:
-    """Per model: the segments that contribute most to its travel-time difference from the reference."""
-    entries = tt.contributions(table)
-    if not entries:
-        return
-    for column, entry in zip(st.columns(len(entries)), entries):
-        model, reference, bars = entry["model"], entry["reference"], entry["bars"]
-        word = "Difference" if reference != "google" else "Difference from Google"
-        order = bars["label"].tolist()
-        chart = (
-            alt.Chart(bars)
-            .mark_bar(color=SOURCE_COLORS[model])
-            .encode(
-                x=alt.X("delta:Q", title=f"{cmp.source_label(model)} − {cmp.source_label(reference)} (s)"),
-                y=alt.Y("label:N", sort=order, title=None, axis=alt.Axis(labelLimit=220)),
-                tooltip=[
-                    alt.Tooltip("label:N", title="Segment"),
-                    alt.Tooltip("delta:Q", title="Difference (s)", format="+,.0f"),
-                    alt.Tooltip("segments:Q", title="Segments"),
-                ],
-            )
-        )
-        zero = alt.Chart(pd.DataFrame({"x": [0]})).mark_rule(color="#9aa0a6").encode(x="x:Q")
-        with column:
-            _show(
-                (chart + zero).properties(
-                    height=alt.Step(24),
-                    title=_title(
-                        f"{word}: {cmp.source_label(model)}",
-                        [f"Total {entry['total']:+,.0f} s over {entry['n']} segments", "Positive = longer than the reference"],
-                    ),
-                )
-            )

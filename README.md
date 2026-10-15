@@ -46,6 +46,8 @@ cities/                        City-specific data loading, estimation and contro
     synced_maps.py/.html       The three synced Leaflet maps
     comparison.py              Chart data: sources side by side, samples and statistics
     charts.py                  "Performance Analysis" charts (draws comparison.py's data)
+    travel_time.py             Segment/section travel times (data, no drawing)
+    travel_time_charts.py      "Travel Time" strips and CSV download
 scripts/                       export_google_observations.py (private CSV exports)
 core/                          Shared by all cities
   config.py                    Settings (demo correction flag) and file locations

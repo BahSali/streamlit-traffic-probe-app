@@ -39,13 +39,18 @@ def test_times_use_the_formula_and_googles_reported_duration_on_one_common_basis
         }
     )
     table = tt.build_table(ordered, snapshot, {"a": 40.0, "b": 20.0, "c": 50.0})
-    assert table.attrs["sources"] == ["primary", "tabpfn", "google"]
+    assert table.attrs["sources"] == ["google", "primary", "tabpfn"]  # Google first, like STIB in the other charts
     assert table["time_primary"].round(6).tolist() == [72.0, 90.0, 72.0]  # 3.6 * L / v
     assert table["time_google"].fillna(-1).tolist() == [-1, 75.0, 60.0]  # reported durations
     assert table["in_basis"].tolist() == [False, True, True]  # segment a lacks Google
     assert tt.totals(table) == {"primary": 162.0, "tabpfn": 45.0 + 36.0, "google": 135.0}
-    [model_panel, tabpfn_panel] = tt.contributions(table)
-    assert model_panel["reference"] == "google" and model_panel["total"] == pytest.approx(27.0)  # 162 - 135
+    assert tt.format_time(45.0) == "45 s (0.75 min)" and tt.format_time(125.0) == "125 s (2.08 min)"
+    export = tt.export_table(table)  # what the CSV download contains
+    assert list(export.columns) == [
+        "segment_id", "street_name", "section", "length_m", "google_speed_kmh", "google_time_s",
+        "traffic_estimation_model_speed_kmh", "traffic_estimation_model_time_s", "tabpfn_speed_kmh", "tabpfn_time_s", "used_in_totals",
+    ]
+    assert export["used_in_totals"].tolist() == [False, True, True]
 
 
 @pytest.mark.parametrize("case", ["selection", "line", "single_no_google"])
