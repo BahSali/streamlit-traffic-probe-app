@@ -14,7 +14,8 @@ Foundation-model estimates (optional fourth map): when the map is shown,
 foundation_model_speed and its FOUNDATION_MODEL_MAP_PROPERTIES are added to the
 map segments, empty. The values come later from their own background job
 (foundation_job.py) and are filled in with with_foundation_speeds(). They are
-not part of the table, charts or CSV download.
+not part of the table or CSV download; the charts read them from
+foundation_job.displayed_speeds().
 """
 from __future__ import annotations
 

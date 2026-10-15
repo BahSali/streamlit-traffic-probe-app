@@ -44,7 +44,8 @@ cities/                        City-specific data loading, estimation and contro
     speed_layers.py            Joins live STIB, model and Google speeds
     model.py                   Estimation model inference
     synced_maps.py/.html       The three synced Leaflet maps
-    charts.py                  "Performance Analysis" charts
+    comparison.py              Chart data: sources side by side, samples and statistics
+    charts.py                  "Performance Analysis" charts (draws comparison.py's data)
 scripts/                       export_google_observations.py (private CSV exports)
 core/                          Shared by all cities
   config.py                    Settings (demo correction flag) and file locations
@@ -80,7 +81,7 @@ The flag affects every place the Brussels estimate appears:
 
 - the middle map ("Estimated Speeds"): line colours and tooltips
 - the "Estimated speed" line in the tooltips of the other two maps
-- **Performance Analysis**: metrics, charts and the Data Preview tab
+- **Performance Analysis**: metrics, charts and the Data Preview
 - **Results**: the `estimated_speed` column of the downloaded CSV
 
 When `True`, the middle map is titled "Estimated Speeds"; when `False` it

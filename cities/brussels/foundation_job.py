@@ -159,6 +159,14 @@ def display_payload(payload: dict | None) -> dict | None:
     return payload
 
 
+def displayed_speeds(payload: dict | None) -> dict[str, float] | None:
+    """Speeds of the prediction shown on the foundation map (by segment id), or None if none is shown."""
+    shown = foundation_state()["shown"]
+    if payload is None or shown is None or not payload.get("foundation_shown"):
+        return None
+    return shown["speeds"]
+
+
 def render_foundation_status(payload: dict | None) -> None:
     """Which snapshot the foundation map shows, and what is running (page captions)."""
     if payload is None or not payload.get("foundation_shown"):

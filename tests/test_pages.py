@@ -248,8 +248,8 @@ def test_run_with_no_google_segments_shows_no_message_and_the_same_order(offline
     shown = " ".join(e.value for e in [*at.info, *at.warning, *at.caption, *at.markdown])
     assert "No segments selected" not in shown and "No Google request was sent" not in shown
     assert not [w for w in at.warning if "TabPFN" not in w.value]  # the TabPFN notice is separate
-    # Only the charts' own empty-state notes below the maps remain.
-    assert {i.value for i in at.info} <= {"No overlapping Estimated and Google speed data are available."}
+    # Nothing but the charts' own notes remains below the maps.
+    assert not at.info
     assert status_lines(at) == expected_lines(at)
     assert at.session_state["brussels_payload"]["selected_google_count"] == 0
 

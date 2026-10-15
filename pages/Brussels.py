@@ -27,6 +27,7 @@ from cities.brussels.controls import brussels_left_controls, brussels_run_button
 from cities.brussels.foundation_job import (
     POLL_SECONDS as FOUNDATION_POLL_SECONDS,
     display_payload,
+    displayed_speeds,
     foundation_job,
     foundation_map_status,
     render_foundation_status,
@@ -180,7 +181,7 @@ def render_content(slots: dict, payload: dict, updating: bool = False) -> None:
     with slots["analysis"].container():
         if has_results:
             with timed("brussels.charts"):
-                render_brussels_results_visualisation(enriched_snapshot_df)
+                render_brussels_results_visualisation(enriched_snapshot_df, displayed_speeds(payload))
 
     with slots["results"].container():
         if has_results:
