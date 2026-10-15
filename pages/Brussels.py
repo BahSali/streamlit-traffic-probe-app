@@ -45,6 +45,7 @@ from cities.brussels.session import (
 )
 from cities.brussels.speed_layers import build_idle_payload
 from cities.brussels.synced_maps import build_synced_maps_html
+from cities.brussels.travel_time_charts import render_travel_time
 from core.config import APPLY_DEMO_SPEED_CORRECTION, FOUNDATION_MODEL_NAME
 from core.layout import page_header, setup_page
 from core.map_render import show_map_with_legend
@@ -185,6 +186,13 @@ def render_content(slots: dict, payload: dict, updating: bool = False) -> None:
                     enriched_snapshot_df, displayed_speeds(payload), payload["result_id"]
                 )
 
+    with slots["travel_time"].container():
+        if has_results:
+            with timed("brussels.travel_time"):
+                render_travel_time(
+                    enriched_snapshot_df, displayed_speeds(payload), payload.get("selection", ((), ())), payload["result_id"]
+                )
+
     with slots["results"].container():
         if has_results:
             st.download_button(
@@ -259,6 +267,9 @@ with content_box:
     st.markdown("---")
     st.markdown("### Performance Analysis")
     slots["analysis"] = st.empty()
+    st.markdown("---")
+    st.markdown("### Travel Time")
+    slots["travel_time"] = st.empty()
     st.markdown("---")
     st.markdown("### Results")
     slots["results"] = st.empty()
