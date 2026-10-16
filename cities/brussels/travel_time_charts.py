@@ -18,11 +18,9 @@ from cities.brussels import travel_time as tt
 from cities.brussels.charts import _show, _title
 from core.colors import LEGEND_RANGES, get_speed_color, speed_color_or
 
-# Absolute speed error (km/h): upper limit, label and colour of each class, green (small) to dark red (large).
-ERROR_CLASSES = [
-    (2, "0–2", "#00B050"), (4, "2–4", "#9ACD32"), (6, "4–6", "#FFFF00"),
-    (10, "6–10", "#FFA500"), (15, "10–15", "#FF0000"), (float("inf"), "15+", "#8B0000"),
-]
+# Absolute speed error (km/h), the one place to edit: upper limit, legend label and colour of each class,
+# green (small) to red (large). The blocks, the legend and the hover all read this list.
+ERROR_CLASSES = [(2, "0–2", "#00B050"), (4, "2–4", "#FFFF00"), (7, "4–7", "#FFA500"), (float("inf"), "≥7", "#FF0000")]
 
 NO_VALUE_COLOR = "#e5e7eb"
 SELECTION = "selection"
@@ -186,14 +184,15 @@ def _draw_strips(blocks: pd.DataFrame, table: pd.DataFrame, labels: list[str], t
     _show(layers.properties(height=alt.Step(34), title=title))
 
 
-def _legend(title: str, items: list[tuple[str, str]], grey: str) -> str:
-    """One small legend line: (colour, label) swatches, then what grey means."""
+def _legend(title: str, items: list[tuple[str, str]], grey: str, ends: tuple[str, str] = ("", "")) -> str:
+    """One small legend line: (colour, label) swatches, optionally framed by words (ends), then what grey means."""
     swatches = "".join(
         f"<span style='display:inline-flex;align-items:center;gap:4px;margin-right:12px;white-space:nowrap;'>"
         f"<span style='width:14px;height:10px;border-radius:2px;background:{color};'></span>{label}</span>"
         for color, label in items
     )
-    return f"<div style='font-size:0.8rem;color:#6b7280;'>{title}: {swatches}<span>grey: {grey}</span></div>"
+    small, large = (f"<span style='margin:0 8px;'>{word}</span>" if word else "" for word in ends)
+    return f"<div style='font-size:0.8rem;color:#6b7280;margin-bottom:0.6rem;'>{title}: {small}{swatches}{large}<span style='margin-left:8px;'>grey: {grey}</span></div>"
 
 
 def _section_table(table: pd.DataFrame, sources: list[str], totals: dict[str, float], shared: int) -> None:
@@ -260,6 +259,12 @@ def render_route_error(results_df: pd.DataFrame, tabpfn_speeds: dict[str, float]
         alt.Tooltip("model:N", title="Model speed"),
         alt.Tooltip("error:N", title="Absolute error"),
     ]
-    title = _title("Absolute speed error vs Google", "Block width = segment length · colour = |model − Google| speed · grey = no Google data")
+    title = _title(
+        "Absolute speed error vs Google",
+        "Colour = |model speed − Google speed| in km/h (exact value on hover) · block width = segment length · grey = no Google data",
+    )
+    st.markdown(
+        _legend("Absolute error (km/h)", [(color, label) for _, label, color in ERROR_CLASSES], "no Google data", ("small", "large")),
+        unsafe_allow_html=True,
+    )
     _draw_strips(blocks, table, [cmp.source_label(k) for k in models], tooltip, title)
-    st.markdown(_legend("Absolute error (km/h)", [(color, label) for _, label, color in ERROR_CLASSES], "no Google data"), unsafe_allow_html=True)
