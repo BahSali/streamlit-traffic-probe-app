@@ -29,7 +29,7 @@ def test_sections_are_simple_ordered_paths_and_segments_are_counted_once():
 
 
 def test_times_use_the_formula_and_googles_reported_duration_on_one_common_basis():
-    ordered = tt.order_sections(segments()).query("section == 1")  # a, b, c
+    ordered, routes = tt.group_segments(segments().query("segment_id in ['a', 'b', 'c']"), [])  # one connected section
     snapshot = pd.DataFrame(
         {
             "segment_id": ["a", "b", "c"],
@@ -38,7 +38,7 @@ def test_times_use_the_formula_and_googles_reported_duration_on_one_common_basis
             "google_duration_seconds": [np.nan, 75.0, 60.0],  # no Google value for a
         }
     )
-    table = tt.build_table(ordered, snapshot, {"a": 40.0, "b": 20.0, "c": 50.0})
+    table = tt.build_table(ordered, routes, snapshot, {"a": 40.0, "b": 20.0, "c": 50.0})
     assert table.attrs["sources"] == ["google", "primary", "tabpfn"]  # Google first, like STIB in the other charts
     assert table["time_primary"].round(6).tolist() == [72.0, 90.0, 72.0]  # 3.6 * L / v
     assert table["time_google"].fillna(-1).tolist() == [-1, 75.0, 60.0]  # reported durations
@@ -47,10 +47,28 @@ def test_times_use_the_formula_and_googles_reported_duration_on_one_common_basis
     assert tt.format_time(45.0) == "45 s (0.75 min)" and tt.format_time(125.0) == "125 s (2.08 min)"
     export = tt.export_table(table)  # what the CSV download contains
     assert list(export.columns) == [
-        "segment_id", "street_name", "section", "length_m", "google_speed_kmh", "google_time_s",
+        "segment_id", "street_name", "section", "route", "also_on_routes", "length_m", "google_speed_kmh", "google_time_s",
         "traffic_estimation_model_speed_kmh", "traffic_estimation_model_time_s", "tabpfn_speed_kmh", "tabpfn_time_s", "used_in_totals",
     ]
     assert export["used_in_totals"].tolist() == [False, True, True]
+
+
+def test_routes_follow_the_selected_lines_and_shared_segments_are_counted_once():
+    scoped = tt.scope_segments(segments(), ((), ("13", "71")))  # a, b, c, d, e; c is on both lines
+    grouped, routes = tt.group_segments(scoped, ["13", "71"])
+    assert [(r["name"], r["ids"], r["parts"]) for r in routes] == [
+        ("Line 13 · direction 1", ["b", "c"], 1),
+        ("Line 71 · direction 1", ["a", "c", "d"], 3),  # cut into parts where the line leaves the selection
+        ("Line 71 · direction 2", ["e"], 1),
+    ]
+    assert grouped["segment_id"].is_unique and sorted(grouped["segment_id"]) == ["a", "b", "c", "d", "e"]
+    assert grouped.set_index("segment_id").loc["c", ["route", "also_on"]].tolist() == ["Line 13 · direction 1", "Line 71 · direction 1"]
+
+    snapshot = pd.DataFrame({"segment_id": list("abcde"), "estimated_speed": 18.0})  # t = 0.2 s per metre
+    table = tt.build_table(grouped, routes, snapshot, None)
+    assert tt.shared_segments(table) == 1
+    assert tt.totals(table) == {"primary": pytest.approx(350.0)}  # each segment once
+    assert tt.route_summary(table)["primary"].tolist() == pytest.approx([150.0, 240.0, 60.0])  # rows include the shared c
 
 
 @pytest.mark.parametrize("case", ["selection", "line", "single_no_google"])

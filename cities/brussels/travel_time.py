@@ -9,10 +9,12 @@ Travel time of a segment:
 - Google: its reported duration in seconds.
 A section's time is the sum of its segments' times. Times are shown as seconds first, then minutes.
 
-A section is a connected, ordered run of segments of one direction (chained
-on the segments' node ids). Scattered segments are separate sections, and a
-total over several sections is a sum, never one trip. Each segment id is
-counted once, however many bus lines serve it.
+A section is either a route (one selected bus line in one direction, ordered by
+chaining the segments' node ids; a line can be cut by the map's edge into
+disconnected parts) or, for segments picked by name, a connected run of
+segments. A total over several sections is a sum, never one trip. Segments
+shared by several selected lines are drawn once (under the first route that
+uses them) and counted once in the total; each route's own row includes them.
 
 Totals use one common basis: the segments where every shown source has a
 value, so the sources are compared on the same segments.
@@ -101,12 +103,51 @@ def order_sections(segments: pd.DataFrame) -> pd.DataFrame:
     return ordered
 
 
+def group_segments(segments: pd.DataFrame, lines: list[str]) -> tuple[pd.DataFrame, list[dict]]:
+    """The scoped segments in strip order, and the sections they belong to.
+
+    lines: the selected bus lines. Each (line, direction) that has segments is a route, taken in line then
+    direction order. A segment shared by several routes is placed once, under the first one (`also_on` names the
+    others). Segments not on a selected line (picked by name) form connected sections of their own.
+
+    Returns (segments with section, part, route, also_on; routes: [{name, ids, parts}] with all of a route's ids,
+    shared ones included).
+    """
+    routes, placed, membership, groups = [], set(), defaultdict(list), []
+    for line in lines:
+        on_line = segments[segments["bus_line_list"].apply(lambda served: line in served)]
+        for direction, sub in on_line.groupby("direction"):
+            ordered = order_sections(sub)
+            name = f"Line {line} · direction {direction}"
+            routes.append({"name": name, "ids": ordered["segment_id"].tolist(), "parts": int(ordered["section"].max())})
+            for segment_id in ordered["segment_id"]:
+                membership[segment_id].append(name)
+            fresh = ordered[~ordered["segment_id"].isin(placed)]
+            placed.update(fresh["segment_id"])
+            groups.append(fresh.assign(part=fresh["section"], section=len(routes), route=name))
+    rest = segments[~segments["segment_id"].isin(placed)]
+    if len(rest):
+        for _, piece in order_sections(rest).groupby("section"):
+            name = piece["segment_name"].iloc[0] if len(piece) == 1 else f"{piece['segment_name'].iloc[0]} … ({len(piece)} segments)"
+            routes.append({"name": name, "ids": piece["segment_id"].tolist(), "parts": 1})
+            membership.update({segment_id: [name] for segment_id in piece["segment_id"]})
+            groups.append(piece.assign(part=1, section=len(routes), route=name))
+    grouped = pd.concat(groups, ignore_index=True)
+    grouped["also_on"] = [
+        ", ".join(name for name in membership[segment_id] if name != route) or "—"
+        for segment_id, route in zip(grouped["segment_id"], grouped["route"])
+    ]
+    return grouped, routes
+
+
 def _numeric(df: pd.DataFrame, column: str) -> pd.Series:
     return pd.to_numeric(df[column], errors="coerce") if column in df.columns else pd.Series(float("nan"), index=df.index)
 
 
-def build_table(ordered: pd.DataFrame, snapshot_df: pd.DataFrame, tabpfn_speeds: dict[str, float] | None) -> pd.DataFrame:
-    """Section-ordered segments with speed_<source> and time_<source> columns, the common basis and x positions.
+def build_table(
+    ordered: pd.DataFrame, routes: list[dict], snapshot_df: pd.DataFrame, tabpfn_speeds: dict[str, float] | None
+) -> pd.DataFrame:
+    """Segments in strip order (from group_segments, with its routes) with speed_<source> and time_<source> columns, the common basis and x positions.
 
     snapshot_df: the RUN's enriched snapshot (estimated speed, Google speed and duration by segment id).
     tabpfn_speeds: TabPFN speeds shown on the maps by segment id, or None.
@@ -130,18 +171,20 @@ def build_table(ordered: pd.DataFrame, snapshot_df: pd.DataFrame, tabpfn_speeds:
     table.attrs["sources"] = sources = [k for k in SOURCES if f"time_{k}" in table.columns and table[f"time_{k}"].notna().any()]
     table["in_basis"] = table[[f"time_{k}" for k in sources]].notna().all(axis=1) if sources else False
 
-    # x positions in km, with a gap between sections.
+    # x positions in km, with a gap between sections and between disconnected parts of a route.
     length_km = table["length_m"] / 1000
     gap = 0.02 * length_km.sum()
     x, previous, x0, x1 = 0.0, None, [], []
-    for section, length in zip(table["section"], length_km):
-        if previous is not None and section != previous:
+    for section, part, length in zip(table["section"], table["part"], length_km):
+        if previous is not None and (section, part) != previous:
             x += gap
         x0.append(x)
         x += length
         x1.append(x)
-        previous = section
-    return table.assign(x0=x0, x1=x1)
+        previous = (section, part)
+    table = table.assign(x0=x0, x1=x1)
+    table.attrs["sources"], table.attrs["routes"] = sources, routes
+    return table
 
 
 def totals(table: pd.DataFrame) -> dict[str, float]:
@@ -150,17 +193,22 @@ def totals(table: pd.DataFrame) -> dict[str, float]:
     return {key: float(basis[f"time_{key}"].sum()) for key in table.attrs["sources"]}
 
 
-def section_summary(table: pd.DataFrame, only_lines: set[str] | None = None) -> pd.DataFrame:
+def shared_segments(table: pd.DataFrame) -> int:
+    """How many segment places the routes have beyond the unique segments (shared stretches)."""
+    return sum(len(route["ids"]) for route in table.attrs["routes"]) - len(table)
+
+
+def route_summary(table: pd.DataFrame) -> pd.DataFrame:
     """One row per section: name, segments, length (km) and the time in seconds per source over the basis.
 
-    only_lines: name a section after these bus lines only (a segment can be served by many); None: all.
+    A route's row includes its shared segments, so rows can overlap; the unique total is totals().
     """
+    by_id = table.set_index("segment_id")
     rows = []
-    for section, part in table.groupby("section", sort=True):
-        served = {line for lines in part["bus_line_list"] for line in lines}
-        lines = ", ".join(sorted(served & only_lines if only_lines and served & only_lines else served, key=lambda s: (len(s), s)))
-        name = part["segment_name"].iloc[0] if len(part) == 1 else f"Line {lines} · direction {part['direction'].iloc[0]}"
-        row = {"Section": f"{section}. {name}", "Segments": len(part), "Length (km)": part["length_m"].sum() / 1000}
+    for number, route in enumerate(table.attrs["routes"], 1):
+        part = by_id.loc[route["ids"]]
+        suffix = f" · {route['parts']} disconnected parts" if route["parts"] > 1 else ""
+        row = {"Section": f"{number}. {route['name']}{suffix}", "Segments": len(part), "Length (km)": part["length_m"].sum() / 1000}
         basis = part[part["in_basis"]]
         for key in table.attrs["sources"]:
             row[key] = basis[f"time_{key}"].sum() if len(basis) else float("nan")
@@ -180,6 +228,8 @@ def export_table(table: pd.DataFrame) -> pd.DataFrame:
             "segment_id": table["segment_id"],
             "street_name": table["segment_name"],
             "section": table["section"],
+            "route": table["route"],
+            "also_on_routes": table["also_on"],
             "length_m": table["length_m"].round(1),
         }
     )

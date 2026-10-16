@@ -33,13 +33,16 @@ def render_travel_time(results_df: pd.DataFrame, tabpfn_speeds: dict[str, float]
         st.info(f"{len(scoped):,} segments are too many to draw. Select fewer segments, or a single bus line.")
         return
 
-    table = tt.build_table(tt.order_sections(scoped), results_df, tabpfn_speeds)
+    lines = [scope] if scope != SELECTION else sorted(selection[1], key=lambda line: (len(line), line))
+    ordered, routes = tt.group_segments(scoped, lines)
+    table = tt.build_table(ordered, routes, results_df, tabpfn_speeds)
     sources = table.attrs["sources"]
     if not sources:
         st.info("No speeds are available for these segments.")
         return
     totals = tt.totals(table)
-    sections = int(table["section"].max())
+    sections = len(routes)
+    shared = tt.shared_segments(table)
 
     st.latex(r"t = 3.6 \cdot \frac{L}{v} \qquad T = \sum t")
     st.caption(
@@ -48,7 +51,8 @@ def render_travel_time(results_df: pd.DataFrame, tabpfn_speeds: dict[str, float]
     )
     basis = table[table["in_basis"]]
     covered = f"{len(basis)} of {_count(len(table), 'segment')} ({100 * basis['length_m'].sum() / table['length_m'].sum():.0f}% of length)"
-    kind = "1 connected section" if sections == 1 else f"{sections} separate sections"
+    parts = any(route["parts"] > 1 for route in routes)
+    kind = "1 connected section" if sections == 1 and not parts else f"{sections} section{'s' * (sections > 1)}" + (" (some with disconnected parts)" if parts else "")
     st.caption(
         f"{_count(len(table), 'segment')} · {table['length_m'].sum() / 1000:.1f} km · {kind}. "
         f"Totals use the {covered} that have a value from every source here; other blocks are faded."
@@ -57,10 +61,13 @@ def render_travel_time(results_df: pd.DataFrame, tabpfn_speeds: dict[str, float]
         st.info("No segment has a value from every source, so no total is shown.")
     _strips(table, sources, totals, sections)
     st.markdown(_speed_legend(), unsafe_allow_html=True)
-    if sections > 1:
-        st.caption("Σ is the sum of the separate sections' times, not the time of one trip.")
-        only_lines = {scope} if scope != SELECTION else set(selection[1])
-        _section_table(table, sources, totals, only_lines)
+    if sections > 1 or parts:
+        st.caption(
+            "Σ is the sum over sections, not the time of one trip."
+            + (f" {shared} shared segment{'s' * (shared > 1)} drawn once, under the first route that uses {'them' if shared > 1 else 'it'}; "
+               "each route's row includes them and Σ counts them once." if shared else "")
+        )
+        _section_table(table, sources, totals, shared)
     st.download_button(
         "Download segment travel times",
         data=tt.export_table(table).to_csv(index=False).encode("utf-8"),
@@ -107,7 +114,8 @@ def _strips(table: pd.DataFrame, sources: list[str], totals: dict[str, float], s
                     "color": table[f"speed_{k}"].map(lambda v: speed_color_or(v, NO_VALUE_COLOR)),
                     "in_basis": table["in_basis"],
                     "street": table["segment_name"],
-                    "section": table["section"],
+                    "route": table["route"],
+                    "also_on": table["also_on"],
                     "length": table["length_m"].round().astype(int),
                     "speed": table[f"speed_{k}"].map(lambda v: "no value" if pd.isna(v) else f"{v:.1f} km/h"),
                     "time": table[f"time_{k}"].map(tt.format_time),
@@ -135,7 +143,8 @@ def _strips(table: pd.DataFrame, sources: list[str], totals: dict[str, float], s
             opacity=alt.condition("datum.in_basis", alt.value(1), alt.value(0.3)),
             tooltip=[
                 alt.Tooltip("street:N", title="Street"),
-                alt.Tooltip("section:Q", title="Section"),
+                alt.Tooltip("route:N", title="Section"),
+                alt.Tooltip("also_on:N", title="Also on"),
                 alt.Tooltip("length:Q", title="Length (m)"),
                 alt.Tooltip("speed:N", title="Speed"),
                 alt.Tooltip("time:N", title="Travel time"),
@@ -171,10 +180,11 @@ def _speed_legend() -> str:
     return f"<div style='font-size:0.8rem;color:#6b7280;'>Speed (km/h): {items}<span>grey: no value</span></div>"
 
 
-def _section_table(table: pd.DataFrame, sources: list[str], totals: dict[str, float], only_lines: set[str]) -> None:
-    """Each section's own total, then their sum."""
-    summary = tt.section_summary(table, only_lines)
-    total_row = {"Section": "Σ sum of sections (not one trip)", "Segments": len(table), "Length (km)": table["length_m"].sum() / 1000}
+def _section_table(table: pd.DataFrame, sources: list[str], totals: dict[str, float], shared: int) -> None:
+    """Each section's own total, then the total over the unique segments."""
+    summary = tt.route_summary(table)
+    label = "Σ all segments, shared ones counted once (not one trip)" if shared else "Σ sum of sections (not one trip)"
+    total_row = {"Section": label, "Segments": len(table), "Length (km)": table["length_m"].sum() / 1000}
     total_row.update({k: totals[k] for k in sources})
     summary = pd.concat([summary, pd.DataFrame([total_row])], ignore_index=True)
     for k in sources:  # seconds first, then minutes
