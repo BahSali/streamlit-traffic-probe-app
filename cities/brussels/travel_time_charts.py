@@ -115,7 +115,7 @@ def _strips(table: pd.DataFrame, sources: list[str], totals: dict[str, float], s
                     "in_basis": table["in_basis"],
                     "street": table["segment_name"],
                     "route": table["route"],
-                    "also_on": table["also_on"],
+                    "bus_lines": table["bus_lines"],
                     "length": table["length_m"].round().astype(int),
                     "speed": table[f"speed_{k}"].map(lambda v: "no value" if pd.isna(v) else f"{v:.1f} km/h"),
                     "time": table[f"time_{k}"].map(tt.format_time),
@@ -144,7 +144,7 @@ def _strips(table: pd.DataFrame, sources: list[str], totals: dict[str, float], s
             tooltip=[
                 alt.Tooltip("street:N", title="Street"),
                 alt.Tooltip("route:N", title="Section"),
-                alt.Tooltip("also_on:N", title="Also on"),
+                alt.Tooltip("bus_lines:N", title="Bus lines"),
                 alt.Tooltip("length:Q", title="Length (m)"),
                 alt.Tooltip("speed:N", title="Speed"),
                 alt.Tooltip("time:N", title="Travel time"),

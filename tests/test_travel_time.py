@@ -47,7 +47,7 @@ def test_times_use_the_formula_and_googles_reported_duration_on_one_common_basis
     assert tt.format_time(45.0) == "45 s (0.75 min)" and tt.format_time(125.0) == "125 s (2.08 min)"
     export = tt.export_table(table)  # what the CSV download contains
     assert list(export.columns) == [
-        "segment_id", "street_name", "section", "route", "also_on_routes", "length_m", "google_speed_kmh", "google_time_s",
+        "segment_id", "street_name", "section", "route", "bus_lines", "length_m", "google_speed_kmh", "google_time_s",
         "traffic_estimation_model_speed_kmh", "traffic_estimation_model_time_s", "tabpfn_speed_kmh", "tabpfn_time_s", "used_in_totals",
     ]
     assert export["used_in_totals"].tolist() == [False, True, True]
@@ -62,10 +62,11 @@ def test_routes_follow_the_selected_lines_and_shared_segments_are_counted_once()
         ("Line 71 · direction 2", ["e"], 1),
     ]
     assert grouped["segment_id"].is_unique and sorted(grouped["segment_id"]) == ["a", "b", "c", "d", "e"]
-    assert grouped.set_index("segment_id").loc["c", ["route", "also_on"]].tolist() == ["Line 13 · direction 1", "Line 71 · direction 1"]
+    assert grouped.set_index("segment_id").loc["c", "route"] == "Line 13 · direction 1"  # shared: drawn once, under the first route
 
     snapshot = pd.DataFrame({"segment_id": list("abcde"), "estimated_speed": 18.0})  # t = 0.2 s per metre
     table = tt.build_table(grouped, routes, snapshot, None)
+    assert table.set_index("segment_id").loc["c", "bus_lines"] == "13, 71, 88"  # every line serving the segment
     assert tt.shared_segments(table) == 1
     assert tt.totals(table) == {"primary": pytest.approx(350.0)}  # each segment once
     assert tt.route_summary(table)["primary"].tolist() == pytest.approx([150.0, 240.0, 60.0])  # rows include the shared c

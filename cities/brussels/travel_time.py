@@ -107,21 +107,19 @@ def group_segments(segments: pd.DataFrame, lines: list[str]) -> tuple[pd.DataFra
     """The scoped segments in strip order, and the sections they belong to.
 
     lines: the selected bus lines. Each (line, direction) that has segments is a route, taken in line then
-    direction order. A segment shared by several routes is placed once, under the first one (`also_on` names the
-    others). Segments not on a selected line (picked by name) form connected sections of their own.
+    direction order. A segment shared by several routes is placed once, under the first one. Segments not on a
+    selected line (picked by name) form connected sections of their own.
 
-    Returns (segments with section, part, route, also_on; routes: [{name, ids, parts}] with all of a route's ids,
+    Returns (segments with section, part, route; routes: [{name, ids, parts}] with all of a route's ids,
     shared ones included).
     """
-    routes, placed, membership, groups = [], set(), defaultdict(list), []
+    routes, placed, groups = [], set(), []
     for line in lines:
         on_line = segments[segments["bus_line_list"].apply(lambda served: line in served)]
         for direction, sub in on_line.groupby("direction"):
             ordered = order_sections(sub)
             name = f"Line {line} · direction {direction}"
             routes.append({"name": name, "ids": ordered["segment_id"].tolist(), "parts": int(ordered["section"].max())})
-            for segment_id in ordered["segment_id"]:
-                membership[segment_id].append(name)
             fresh = ordered[~ordered["segment_id"].isin(placed)]
             placed.update(fresh["segment_id"])
             groups.append(fresh.assign(part=fresh["section"], section=len(routes), route=name))
@@ -130,14 +128,8 @@ def group_segments(segments: pd.DataFrame, lines: list[str]) -> tuple[pd.DataFra
         for _, piece in order_sections(rest).groupby("section"):
             name = piece["segment_name"].iloc[0] if len(piece) == 1 else f"{piece['segment_name'].iloc[0]} … ({len(piece)} segments)"
             routes.append({"name": name, "ids": piece["segment_id"].tolist(), "parts": 1})
-            membership.update({segment_id: [name] for segment_id in piece["segment_id"]})
             groups.append(piece.assign(part=1, section=len(routes), route=name))
-    grouped = pd.concat(groups, ignore_index=True)
-    grouped["also_on"] = [
-        ", ".join(name for name in membership[segment_id] if name != route) or "—"
-        for segment_id, route in zip(grouped["segment_id"], grouped["route"])
-    ]
-    return grouped, routes
+    return pd.concat(groups, ignore_index=True), routes
 
 
 def _numeric(df: pd.DataFrame, column: str) -> pd.Series:
@@ -161,6 +153,7 @@ def build_table(
         }
     ).drop_duplicates("segment_id")
     table = ordered.merge(run, on="segment_id", how="left")
+    table["bus_lines"] = table["bus_line_list"].map(lambda lines: ", ".join(sorted(lines, key=lambda line: (len(line), line))))
     if tabpfn_speeds is not None:
         table["speed_tabpfn"] = pd.to_numeric(table["segment_id"].map(tabpfn_speeds), errors="coerce")
     for key in ("primary", "tabpfn"):
@@ -229,7 +222,7 @@ def export_table(table: pd.DataFrame) -> pd.DataFrame:
             "street_name": table["segment_name"],
             "section": table["section"],
             "route": table["route"],
-            "also_on_routes": table["also_on"],
+            "bus_lines": table["bus_lines"],
             "length_m": table["length_m"].round(1),
         }
     )
