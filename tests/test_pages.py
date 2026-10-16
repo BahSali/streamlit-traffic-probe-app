@@ -134,14 +134,14 @@ def test_brussels_timings_go_to_the_log_not_the_page(offline, caplog):
 
 
 def test_brussels_run_twice_without_reset(offline):
-    """RUN, wait for the results, RUN again: no duplicate element, one download button."""
+    """RUN, wait for the results, RUN again: no duplicate element, one results download button."""
 
     def assert_run_succeeded(at):
         assert not at.exception, [e.value for e in at.exception]
         page_text = " ".join(e.value for e in [*at.markdown, *at.caption])
         assert "Duplicate" not in page_text and "Update failed" not in page_text
         assert any(c.value.startswith("Maps last updated at") for c in at.caption)
-        assert len(at.get("download_button")) == 1
+        assert len([b for b in at.get("download_button") if b.label == "Download results"]) == 1
 
     at, _, _ = run_brussels(offline)
     assert_run_succeeded(at)
@@ -159,7 +159,7 @@ def test_brussels_run_twice_without_reset(offline):
     assert offline["downloads"][-1] != first
 
     at.multiselect(key="bru_bus_ids").set_value(["12"]).run()  # an unrelated rerun keeps one button
-    assert len(at.get("download_button")) == 1 and not at.exception
+    assert len([b for b in at.get("download_button") if b.label == "Download results"]) == 1 and not at.exception
 
 
 INTERNAL_TERMS = ["Google Routes diagnostics", "Three synced maps", "Map 2 estimation", "pt_inference",
@@ -248,8 +248,8 @@ def test_run_with_no_google_segments_shows_no_message_and_the_same_order(offline
     shown = " ".join(e.value for e in [*at.info, *at.warning, *at.caption, *at.markdown])
     assert "No segments selected" not in shown and "No Google request was sent" not in shown
     assert not [w for w in at.warning if "TabPFN" not in w.value]  # the TabPFN notice is separate
-    # Only the charts' own empty-state notes below the maps remain.
-    assert {i.value for i in at.info} <= {"No overlapping Estimated and Google speed data are available."}
+    # Nothing but the charts' own notes remains below the maps.
+    assert not at.info
     assert status_lines(at) == expected_lines(at)
     assert at.session_state["brussels_payload"]["selected_google_count"] == 0
 

@@ -257,6 +257,7 @@ def compute_update(inputs: dict, report: Callable[[str], None]) -> dict:
         )
     payload["updated_at"] = datetime.now(BRUSSELS_TZ)
     payload["result_id"] = uuid.uuid4().hex
+    payload["selection"] = inputs["selection"]  # (segment names, bus ids) this result was computed for
     return {"google": google, "payload": payload}
 
 

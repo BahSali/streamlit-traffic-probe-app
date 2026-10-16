@@ -1,298 +1,337 @@
+"""Brussels "Performance Analysis": compares STIB, the Traffic Estimation Model, TabPFN and Google.
+
+The data and statistics come from comparison.py; this file only draws them.
+Sources always appear in the order STIB, Traffic Estimation Model, TabPFN,
+Google, each in its own fixed colour. Google is the reference when the run has
+enough of it (see comparison.MIN_REFERENCE_ROWS): error metrics and error
+charts. Otherwise the sources are only compared with each other, and nothing
+says which is more accurate. TabPFN appears only when its prediction is shown
+on the maps.
+"""
 from __future__ import annotations
 
+import altair as alt
 import pandas as pd
 import streamlit as st
-import altair as alt
+
+from cities.brussels import comparison as cmp
+
+# One fixed colour per source, so it never changes when TabPFN is switched off.
+SOURCE_COLORS = {"stib": "#1baf7a", "primary": "#2a78d6", "tabpfn": "#eb6834", "google": "#6b6a66"}
+NEUTRAL_COLOR = "#5b6b7a"
+HIGHEST, LOWEST = "Highest error", "Lowest error"
 
 
-def _prepare_results_df(results_df: pd.DataFrame) -> pd.DataFrame:
-    if results_df is None or results_df.empty:
-        return pd.DataFrame()
+def render_brussels_results_visualisation(
+    results_df: pd.DataFrame, tabpfn_speeds: dict[str, float] | None = None, key: str = ""
+) -> None:
+    """results_df: the RUN's enriched snapshot; tabpfn_speeds: TabPFN speeds shown on the maps, or None.
 
-    df = results_df.copy().rename(
-        columns={
-            "final_speed_kmh": "bus_speed",
-            "estimated_speed": "est_speed",
-            "google_speed_kmh": "google_speed",
-            "snapshot_time": "timestamp",
-        }
-    )
-
-    for col in ["bus_speed", "est_speed", "google_speed"]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    return df
-
-
-def render_brussels_results_visualisation(results_df: pd.DataFrame) -> None:
-    df = _prepare_results_df(results_df)
-    if df.empty:
+    key: unique per RUN result (a RUN draws the previous result first), for the widgets' ids.
+    """
+    frame = cmp.build_frame(results_df, tabpfn_speeds)
+    if frame.empty:
         st.info("No results available for visualisation.")
         return
 
-    render_summary_metrics(df)
+    errors = cmp.reference_errors(frame)
+    reference = cmp.has_reference(frame)
+    render_summary_metrics(frame, errors, reference, key)
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(
-        [
-            "Street-Level Error",
-            "Estimated vs Google",
-            "Absolute Error Distribution",
-            "Speed Distribution",
-            "Data Preview",
+    if reference:
+        panels = [
+            ("Street-Level Error", lambda: render_street_error_chart(errors, key)),
+            ("Estimated vs Google", lambda: render_source_scatter(_reference_pairs(errors))),
+            ("Absolute Error Distribution", lambda: render_error_distribution(errors)),
+            ("Speed Distribution", lambda: render_speed_distribution_chart(frame)),
         ]
-    )
+    else:
+        panels = [
+            ("Largest Speed Differences", lambda: render_street_spread_chart(frame)),
+            ("Source Comparison", lambda: render_source_comparison(frame)),
+            ("Speed Distribution", lambda: render_speed_distribution_chart(frame)),
+        ]
+    for tab, (_, render) in zip(st.tabs([title for title, _ in panels]), panels):
+        with tab:
+            render()
 
-    with tab1:
-        render_estimation_google_abs_error_by_street_chart(df)
-
-    with tab2:
-        render_estimation_vs_google_scatter(df)
-
-    with tab3:
-        render_estimation_google_absolute_error_distribution(df)
-
-    with tab4:
-        render_speed_distribution_chart(df)
-
-    with tab5:
-        st.dataframe(df, width="stretch")
+    with st.expander("Data Preview"):
+        st.dataframe(frame.rename(columns={key: cmp.source_label(key) for key in cmp.SOURCES}), width="stretch")
 
 
-def render_summary_metrics(df: pd.DataFrame) -> None:
-    google_overlap = 0
-    mean_abs_error = None
-
-    if {"est_speed", "google_speed"}.issubset(df.columns):
-        overlap_df = df.dropna(subset=["est_speed", "google_speed"]).copy()
-        google_overlap = len(overlap_df)
-        if not overlap_df.empty:
-            mean_abs_error = (
-                overlap_df["est_speed"] - overlap_df["google_speed"]
-            ).abs().mean()
-
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total Segments", len(df))
-    col2.metric(
-        "Segments with Google Speed",
-        int(df["google_speed"].notna().sum()) if "google_speed" in df.columns else 0,
-    )
-    col3.metric(
-        "Mean Absolute Error",
-        f"{mean_abs_error:.2f} km/h" if mean_abs_error is not None else "N/A",
-    )
-
-    st.caption(f"Segments with both Estimated and Google speed values: {google_overlap}")
-
-
-def render_estimation_google_abs_error_by_street_chart(df: pd.DataFrame) -> None:
-    required_cols = {"segment_name", "est_speed", "google_speed"}
-    if not required_cols.issubset(df.columns):
-        st.info("Required columns for the street-level error chart are not available.")
-        return
-
-    plot_df = df.dropna(subset=["segment_name", "est_speed", "google_speed"]).copy()
-    if plot_df.empty:
-        st.info("No overlapping Estimated and Google speed data are available.")
-        return
-
-    plot_df["absolute_error"] = (plot_df["est_speed"] - plot_df["google_speed"]).abs()
-
-    street_error_df = (
-        plot_df.groupby("segment_name", as_index=False)
-        .agg(
-            mean_absolute_error=("absolute_error", "mean"),
-            sample_count=("absolute_error", "size"),
-            mean_estimated_speed=("est_speed", "mean"),
-            mean_google_speed=("google_speed", "mean"),
+def render_summary_metrics(frame: pd.DataFrame, errors: pd.DataFrame, reference: bool, key: str) -> None:
+    """Coverage, then one MAE per source; sample sizes are in the tooltips. (Typography: core.styles.)"""
+    total = len(frame)
+    google_rows = int(frame["google"].notna().sum())
+    with st.container(key=f"bru_summary_{key}"):
+        columns = st.columns(3)
+        columns[0].metric("Segments", f"{total:,}")
+        columns[1].metric(
+            "With Google speed",
+            f"{google_rows:,} ({100 * google_rows / total:.0f}%)",
+            help="Errors are computed only on these segments, not on the full network.",
         )
-        .sort_values("mean_absolute_error", ascending=False)
-        .head(20)
+        if not reference:
+            st.caption(
+                f"Fewer than {cmp.MIN_REFERENCE_ROWS} Google segments: the sources are only compared with each other, "
+                "which does not show which one is more accurate."
+            )
+            return
+        st.caption("Mean absolute error vs Google (km/h), on segments with Google speed")
+        summary = cmp.error_summary(errors)
+        for column, (source, row) in zip(st.columns(3), summary.iterrows()):
+            sample = (
+                "its own sample, not directly comparable with the models"
+                if source == "stib"
+                else "same segments for all models"
+            )
+            column.metric(cmp.source_label(source), f"{row['MAE']:.2f}", help=f"{int(row['n']):,} segments ({sample})")
+
+
+def _title(text: str, subtitle: str | list[str] | None = None) -> alt.TitleParams:
+    return alt.TitleParams(text, subtitle=subtitle, anchor="start", fontSize=14, subtitleFontSize=12, subtitleColor="#6b7280")
+
+
+def _show(chart: alt.TopLevelMixin) -> None:
+    """Draw a chart with the same fonts and no frame everywhere."""
+    chart = chart.configure_axis(labelFontSize=11, titleFontSize=12, titleFontWeight="normal")
+    chart = chart.configure_legend(labelFontSize=11, titleFontSize=12).configure_view(stroke=None)
+    st.altair_chart(chart, width="stretch")
+
+
+def _color(keys: list[str], field: str = "label", labels: list[str] | None = None, legend: bool = True) -> alt.Color:
+    """Source colours; labels are the values of field, in the order of keys."""
+    labels = labels or [cmp.source_label(key) for key in keys]
+    return alt.Color(
+        f"{field}:N",
+        scale=alt.Scale(domain=labels, range=[SOURCE_COLORS[key] for key in keys]),
+        legend=alt.Legend(title=None, orient="top", direction="horizontal") if legend else None,
     )
+
+
+def _choice(name: str, options: list[str], key: str, label: str) -> str:
+    """A selector whose choice survives a new RUN: its widget id changes with every result (key),
+    so the choice is remembered in session state under name."""
+    saved = st.session_state.get(name)
+    default = saved if saved in options else options[0]
+    widget = f"{name}_{key}"
+
+    def remember() -> None:
+        if st.session_state[widget]:  # clicking the selected option again clears it: keep the old choice
+            st.session_state[name] = st.session_state[widget]
+
+    return st.segmented_control(label, options, default=default, key=widget, on_change=remember) or default
+
+
+def render_street_error_chart(errors: pd.DataFrame, key: str) -> None:
+    """Mean absolute error vs Google per street (segment_name groups the segments of a street).
+
+    The 15 streets with the highest (or lowest) error of the chosen model, with every available source
+    beside it. The ranking model is chosen here when there are two (TabPFN shown), else it is the
+    Traffic Estimation Model.
+    """
+    models = [k for k in cmp.MODELS if k in errors["source"].values]
+    if not models:
+        st.info("No model estimates overlap with Google speeds.")
+        return
+    left, right, _ = st.columns([5, 4, 1])
+    with left:
+        rank_label = (
+            _choice("bru_street_rank", [cmp.source_label(k) for k in models], key, "Ranked by")
+            if len(models) > 1
+            else cmp.source_label(models[0])
+        )
+    with right:
+        view = _choice("bru_street_view", [HIGHEST, LOWEST], key, "Show")
+    rank_by = next(k for k in models if cmp.source_label(k) == rank_label)
+    highest = view == HIGHEST
+
+    street = cmp.street_errors(errors, rank_by, highest)
+    street["label"] = street["source"].map(cmp.source_label)
+    street["street_label"] = street["street"] + " (" + street["rank_segments"].astype(str) + ")"
+    order = (
+        street.drop_duplicates("street_label")
+        .sort_values("rank_mae", ascending=not highest)["street_label"]
+        .tolist()
+    )
+    keys = [k for k in cmp.SOURCES if k in street["source"].values]
 
     chart = (
-        alt.Chart(street_error_df)
+        alt.Chart(street)
         .mark_bar()
         .encode(
-            x=alt.X(
-                "mean_absolute_error:Q",
-                title="Mean Absolute Error |Estimated Speed - Google Speed| (km/h)",
-                scale=alt.Scale(domainMin=0),
-            ),
-            y=alt.Y(
-                "segment_name:N",
-                sort="-x",
-                title="Street Name",
-            ),
+            x=alt.X("mae:Q", title="Mean absolute error vs Google (km/h)", scale=alt.Scale(domainMin=0)),
+            y=alt.Y("street_label:N", sort=order, title=None),
+            yOffset=alt.YOffset("label:N", sort=[cmp.source_label(k) for k in keys]),
+            color=_color(keys),
             tooltip=[
-                alt.Tooltip("segment_name:N", title="Street Name"),
-                alt.Tooltip(
-                    "mean_absolute_error:Q",
-                    title="Mean Absolute Error (km/h)",
-                    format=".2f",
-                ),
-                alt.Tooltip(
-                    "mean_estimated_speed:Q",
-                    title="Estimated Speed (km/h)",
-                    format=".2f",
-                ),
-                alt.Tooltip(
-                    "mean_google_speed:Q",
-                    title="Google Speed (km/h)",
-                    format=".2f",
-                ),
+                alt.Tooltip("street:N", title="Street"),
+                alt.Tooltip("label:N", title="Source"),
+                alt.Tooltip("mae:Q", title="Mean absolute error (km/h)", format=".2f"),
+                alt.Tooltip("segments:Q", title="Segments in this street"),
             ],
         )
         .properties(
-            height=560,
-            title="Top 20 Streets with the Highest Mean Absolute Error",
+            height=max(300, 13 * len(order) * len(keys)),
+            title=_title(
+                f"{len(order)} streets with the {'highest' if highest else 'lowest'} error, ranked by {rank_label}",
+                "Error averaged over each street's segments with Google speed; their number is in brackets",
+            ),
         )
     )
+    _show(chart)
 
-    st.altair_chart(chart, width="stretch")
 
-
-def render_estimation_vs_google_scatter(df: pd.DataFrame) -> None:
-    required_cols = {"est_speed", "google_speed", "segment_id", "segment_name"}
-    if not required_cols.issubset(df.columns):
-        st.info("Required columns for the Estimated vs Google scatter plot are not available.")
+def render_street_spread_chart(frame: pd.DataFrame) -> None:
+    """No Google: the streets where the available sources differ most."""
+    street = cmp.street_spread(frame)
+    if street.empty:
+        st.info("At least two sources with overlapping segments are needed to compare streets.")
         return
-
-    plot_df = df.dropna(subset=["est_speed", "google_speed"]).copy()
-    if plot_df.empty:
-        st.info("No overlapping Estimated and Google speed data are available.")
-        return
-
-    min_val = min(plot_df["google_speed"].min(), plot_df["est_speed"].min())
-    max_val = max(plot_df["google_speed"].max(), plot_df["est_speed"].max())
-
-    diagonal_df = pd.DataFrame(
-        {
-            "x": [min_val, max_val],
-            "y": [min_val, max_val],
-        }
-    )
-
-    points = (
-        alt.Chart(plot_df)
-        .mark_circle(size=80)
-        .encode(
-            x=alt.X("google_speed:Q", title="Google Speed (km/h)"),
-            y=alt.Y("est_speed:Q", title="Estimated Speed (km/h)"),
-            tooltip=[
-                alt.Tooltip("segment_id:N", title="Segment ID"),
-                alt.Tooltip("segment_name:N", title="Street Name"),
-                alt.Tooltip("google_speed:Q", title="Google Speed (km/h)", format=".2f"),
-                alt.Tooltip("est_speed:Q", title="Estimated Speed (km/h)", format=".2f"),
-            ],
-        )
-    )
-
-    diagonal = (
-        alt.Chart(diagonal_df)
-        .mark_line()
-        .encode(
-            x=alt.X("x:Q", title="Google Speed (km/h)"),
-            y=alt.Y("y:Q", title="Estimated Speed (km/h)"),
-        )
-    )
-
-    chart = (points + diagonal).properties(
-        height=400,
-        title="Estimated Speed versus Google Speed",
-    )
-
-    st.altair_chart(chart, width="stretch")
-
-
-def render_estimation_google_absolute_error_distribution(df: pd.DataFrame) -> None:
-    required_cols = {"est_speed", "google_speed"}
-    if not required_cols.issubset(df.columns):
-        st.info("Required columns for the absolute error distribution are not available.")
-        return
-
-    plot_df = df.dropna(subset=["est_speed", "google_speed"]).copy()
-    if plot_df.empty:
-        st.info("No overlapping Estimated and Google speed data are available.")
-        return
-
-    plot_df["absolute_error"] = (plot_df["est_speed"] - plot_df["google_speed"]).abs()
-
-    max_error = float(plot_df["absolute_error"].max())
-    max_bin = max(1, int(max_error) + 1)
-
+    street["street_label"] = street["street"] + " (" + street["segments"].astype(str) + ")"
     chart = (
-        alt.Chart(plot_df)
-        .mark_bar()
+        alt.Chart(street)
+        .mark_bar(color=NEUTRAL_COLOR)
         .encode(
-            x=alt.X(
-                "absolute_error:Q",
-                bin=alt.Bin(step=1, extent=[0, max_bin]),
-                title="Absolute Error |Estimated Speed - Google Speed| (km/h)",
-            ),
-            y=alt.Y(
-                "count():Q",
-                title="Distribution",
-                axis=alt.Axis(format="d", tickMinStep=1),
-            ),
+            x=alt.X("spread:Q", title="Mean speed difference between sources (km/h)", scale=alt.Scale(domainMin=0)),
+            y=alt.Y("street_label:N", sort="-x", title=None, axis=alt.Axis(labelOverlap=False)),
             tooltip=[
-                alt.Tooltip("count():Q", title="Count"),
+                alt.Tooltip("street:N", title="Street"),
+                alt.Tooltip("spread:Q", title="Mean difference (km/h)", format=".2f"),
+                alt.Tooltip("segments:Q", title="Segments"),
             ],
         )
         .properties(
-            height=420,
-            title="Distribution of Absolute Error",
+            height=28 * len(street),
+            title=_title(
+                f"{len(street)} streets with the largest speed differences between sources",
+                "Highest minus lowest source speed, averaged over the street's segments; their number is in brackets",
+            ),
         )
     )
+    _show(chart)
 
-    st.altair_chart(chart, width="stretch")
 
-    mean_abs_error = plot_df["absolute_error"].mean()
-    median_abs_error = plot_df["absolute_error"].median()
-    max_abs_error = plot_df["absolute_error"].max()
+def _reference_pairs(errors: pd.DataFrame) -> dict[tuple[str, str], pd.DataFrame]:
+    """Google (x) against each source (y), each on its own sample."""
+    return {
+        ("google", key): sample[["segment_id", "segment_name"]].assign(x=sample["google"], y=sample["speed"])
+        for key, sample in errors.groupby("source", sort=False)
+    }
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Mean Absolute Error", f"{mean_abs_error:.2f} km/h")
-    c2.metric("Median Absolute Error", f"{median_abs_error:.2f} km/h")
-    c3.metric("Maximum Absolute Error", f"{max_abs_error:.2f} km/h")
 
-def render_speed_distribution_chart(df: pd.DataFrame) -> None:
-    parts = []
-
-    for source_name, col in [
-        ("Bus", "bus_speed"),
-        ("Estimated", "est_speed"),
-        ("Google", "google_speed"),
-    ]:
-        if col in df.columns:
-            tmp = df[[col]].copy()
-            tmp = tmp.rename(columns={col: "speed"})
-            tmp["source"] = source_name
-            parts.append(tmp)
-
-    if not parts:
-        st.info("No speed columns are available for the distribution chart.")
+def render_source_scatter(pairs: dict[tuple[str, str], pd.DataFrame]) -> None:
+    """One scatter per pair of sources on shared axes with a y = x line."""
+    pairs = {keys: pair for keys, pair in pairs.items() if not pair.empty}
+    if not pairs:
+        st.info("No overlapping speeds are available to compare.")
         return
+    low = max(0.0, min(min(pair["x"].min(), pair["y"].min()) for pair in pairs.values()))
+    high = max(max(pair["x"].max(), pair["y"].max()) for pair in pairs.values())
+    axis = alt.Scale(domain=[low, high], nice=True)
 
-    long_df = pd.concat(parts, ignore_index=True)
-    long_df = long_df.dropna(subset=["speed"])
+    for column, ((x_key, y_key), pair) in zip(st.columns(len(pairs)), pairs.items()):
+        x_title, y_title = f"{cmp.source_label(x_key)} (km/h)", f"{cmp.source_label(y_key)} (km/h)"
+        points = (
+            alt.Chart(pair)
+            .mark_circle(size=50, opacity=0.7, color=SOURCE_COLORS[y_key])
+            .encode(
+                x=alt.X("x:Q", title=x_title, scale=axis),
+                y=alt.Y("y:Q", title=y_title, scale=axis),
+                tooltip=[
+                    alt.Tooltip("segment_id:N", title="Segment ID"),
+                    alt.Tooltip("segment_name:N", title="Street"),
+                    alt.Tooltip("x:Q", title=x_title, format=".2f"),
+                    alt.Tooltip("y:Q", title=y_title, format=".2f"),
+                ],
+            )
+        )
+        diagonal = (
+            alt.Chart(pd.DataFrame({"v": [low, high]}))
+            .mark_line(color="#9aa0a6", strokeDash=[4, 4])
+            .encode(x=alt.X("v:Q", title=x_title), y=alt.Y("v:Q", title=y_title))
+        )
+        with column:
+            _show(
+                (points + diagonal).properties(
+                    height=320,
+                    title=_title(cmp.source_label(y_key), [f"vs {cmp.source_label(x_key)}", f"{len(pair):,} segments"]),
+                )
+            )
 
-    if long_df.empty:
-        st.info("No non-null speed values are available for the distribution chart.")
+
+def render_source_comparison(frame: pd.DataFrame) -> None:
+    """No Google: pairwise scatter of the available sources and how far apart they are."""
+    pairs = cmp.source_pairs(frame)
+    if not pairs:
+        st.info("At least two sources with overlapping segments are needed for a comparison.")
         return
+    render_source_scatter(pairs)
+    summary = cmp.difference_summary(pairs).rename(
+        columns={"n": "Segments", "Mean |difference|": "Mean |difference| (km/h)", "Mean difference": "Mean difference (km/h)"}
+    )
+    st.dataframe(summary.round(2), width="stretch")
+    st.caption("Differences between sources, not errors: without Google neither is known to be right. Mean difference = first minus second.")
 
+
+def render_error_distribution(errors: pd.DataFrame) -> None:
+    """Share of each source's segments per 1 km/h bin of absolute error vs Google, and the error statistics."""
+    keys = [key for key in cmp.SOURCES if key in errors["source"].values]
+    bins = errors["abs_error"].floordiv(1).astype(int)
+    shares = errors.assign(bin=bins).groupby(["source", "bin"]).size() / errors.groupby("source").size()
+    y_scale = alt.Scale(domain=[0, shares.max()], nice=True)  # shared by the panels
+    max_bin = max(1, int(errors["abs_error"].max()) + 1)
+
+    for column, key in zip(st.columns(len(keys)), keys):
+        sample = errors[errors["source"] == key]
+        chart = (
+            alt.Chart(sample)
+            .transform_joinaggregate(total="count()")
+            .transform_calculate(share="1 / datum.total")
+            .mark_bar(color=SOURCE_COLORS[key])
+            .encode(
+                x=alt.X("abs_error:Q", bin=alt.Bin(step=1, extent=[0, max_bin]), title="Absolute error vs Google (km/h)"),
+                y=alt.Y("sum(share):Q", scale=y_scale, axis=alt.Axis(format="%"), title="Share of segments"),
+                tooltip=[alt.Tooltip("count():Q", title="Segments")],
+            )
+            .properties(height=300, title=_title(cmp.source_label(key), f"{len(sample):,} segments"))
+        )
+        with column:
+            _show(chart)
+
+    summary = cmp.error_summary(errors)
+    summary.index = [cmp.source_label(key) for key in summary.index]
+    st.dataframe(
+        summary.rename(
+            columns={"n": "Segments", "MAE": "MAE (km/h)", "Median AE": "Median AE (km/h)", "RMSE": "RMSE (km/h)", "Bias": "Bias (km/h)"}
+        ).round(2),
+        width="stretch",
+    )
+    st.caption("Bias = mean of (source − Google). STIB is evaluated on its own segments, the models on the same ones.")
+
+
+def render_speed_distribution_chart(frame: pd.DataFrame) -> None:
+    """Boxplot of each source's speeds over all the segments it covers (n under the name)."""
+    keys = cmp.available_sources(frame)
+    long_df = pd.concat(
+        [
+            frame[[key]].dropna().set_axis(["speed"], axis=1).assign(source=f"{cmp.source_label(key)}|{frame[key].notna().sum():,} segments")
+            for key in keys
+        ],
+        ignore_index=True,
+    )
+    labels = long_df["source"].drop_duplicates().tolist()
     chart = (
         alt.Chart(long_df)
         .mark_boxplot()
         .encode(
-            x=alt.X("source:N", title="Data Source"),
+            x=alt.X("source:N", title=None, sort=labels, axis=alt.Axis(labelAngle=0, labelLimit=0, labelExpr="split(datum.label, '|')")),
             y=alt.Y("speed:Q", title="Speed (km/h)"),
-            tooltip=[alt.Tooltip("source:N", title="Data Source")],
+            color=_color(keys, field="source", labels=labels, legend=False),
         )
         .properties(
             height=380,
-            title="Speed Distribution by Data Source",
+            title=_title("Speed distribution by source", "Each source over all the segments it covers; Google only covers the selected ones"),
         )
     )
-
-    st.altair_chart(chart, width="stretch")
+    _show(chart)

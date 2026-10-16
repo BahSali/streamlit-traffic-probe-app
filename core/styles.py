@@ -45,6 +45,30 @@ def inject_styles():
         background-color: #005F56;
     }
 
+    /* Performance Analysis summary (cities/brussels/charts.py): smaller values, labels that wrap. */
+    div[class*="st-key-bru_summary"] [data-testid="stMetricValue"] {
+        font-size: 1.6rem;
+    }
+    div[class*="st-key-bru_summary"] [data-testid="stMetricLabel"] p {
+        font-size: 0.85rem;
+        white-space: normal;
+    }
+
+    /* The speed legend (core.colors.legend_html) stays to the right of the map
+       whenever the screen is wider than a phone: its column keeps the width of
+       its labels and the map column shrinks instead of the row wrapping. */
+    @media (min-width: 641px) {
+        div[data-testid="stHorizontalBlock"]:has(> div[data-testid="stColumn"] .speed-legend) {
+            flex-wrap: nowrap;
+        }
+        div[data-testid="stColumn"]:has(.speed-legend) {
+            min-width: 5.5rem;
+        }
+        div[data-testid="stColumn"]:not(:has(.speed-legend)):has(+ div[data-testid="stColumn"] .speed-legend) {
+            min-width: 0;
+        }
+    }
+
     </style>
     """
     st.markdown(style, unsafe_allow_html=True)
