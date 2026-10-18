@@ -44,12 +44,14 @@ def render_brussels_results_visualisation(
             ("Estimated vs Google", lambda: render_source_scatter(_reference_pairs(errors))),
             ("Absolute Error Distribution", lambda: render_error_distribution(errors)),
             ("Speed Distribution", lambda: render_speed_distribution_chart(frame)),
+            ("Route-Level Error", lambda: _route_error(results_df, tabpfn_speeds, key)),
         ]
     else:
         panels = [
             ("Largest Speed Differences", lambda: render_street_spread_chart(frame)),
             ("Source Comparison", lambda: render_source_comparison(frame)),
             ("Speed Distribution", lambda: render_speed_distribution_chart(frame)),
+            ("Route-Level Error", lambda: _route_error(results_df, tabpfn_speeds, key)),
         ]
     for tab, (_, render) in zip(st.tabs([title for title, _ in panels]), panels):
         with tab:
@@ -57,6 +59,12 @@ def render_brussels_results_visualisation(
 
     with st.expander("Data Preview"):
         st.dataframe(frame.rename(columns={key: cmp.source_label(key) for key in cmp.SOURCES}), width="stretch")
+
+
+def _route_error(results_df: pd.DataFrame, tabpfn_speeds: dict[str, float] | None, key: str) -> None:
+    from cities.brussels.travel_time_charts import render_route_error  # imported here: that module imports this one
+
+    render_route_error(results_df, tabpfn_speeds, key)
 
 
 def render_summary_metrics(frame: pd.DataFrame, errors: pd.DataFrame, reference: bool, key: str) -> None:

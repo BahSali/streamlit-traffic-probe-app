@@ -56,6 +56,18 @@ def bus_lines(segments: pd.DataFrame) -> list[str]:
     return sorted({line for lines in segments["bus_line_list"] for line in lines}, key=lambda line: (len(line), line))
 
 
+def lines_with_google(segments: pd.DataFrame, snapshot_df: pd.DataFrame) -> list[str]:
+    """Bus lines with at least one segment that has a Google speed in this RUN."""
+    has_google = _numeric(snapshot_df, "google_speed_kmh").notna()
+    ids = set(snapshot_df.loc[has_google, "segment_id"].astype(str).str.strip())
+    return bus_lines(segments[segments["segment_id"].isin(ids)])
+
+
+def speed_error(table: pd.DataFrame, key: str) -> pd.Series:
+    """|model speed - Google speed| in km/h per segment; missing (never 0) where either speed is missing."""
+    return (table[f"speed_{key}"] - table["speed_google"]).abs()
+
+
 def scope_segments(segments: pd.DataFrame, selection: tuple, line: str | None = None) -> pd.DataFrame:
     """Unique segments of one bus line, or of the RUN's selection (segment names, bus ids)."""
     if line is not None:

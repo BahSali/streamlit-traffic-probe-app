@@ -91,3 +91,17 @@ def test_travel_time_section_renders(case):
     at = AppTest.from_function(page, args=(case,), default_timeout=90).run()
     assert not at.exception, [e.value for e in at.exception]
     assert at.selectbox[0].value == ("selection" if case != "line" else tt.bus_lines(tt.segment_table())[0])  # no selection: first line
+
+
+def test_route_error_is_missing_never_zero_where_google_is_missing():
+    from cities.brussels.travel_time_charts import NO_VALUE_COLOR, _error_color
+
+    scoped = tt.scope_segments(segments(), ((), ("71",)))  # a, c, d, e
+    snapshot = pd.DataFrame(
+        {"segment_id": list("acde"), "estimated_speed": 18.0, "google_speed_kmh": [20.0, np.nan, np.nan, np.nan]}
+    )
+    grouped, routes = tt.group_segments(scoped, ["71"])
+    error = tt.speed_error(tt.build_table(grouped, routes, snapshot, None), "primary")
+    assert error.notna().sum() == 1 and error.dropna().iloc[0] == pytest.approx(2.0)  # only the Google segment has an error
+    assert tt.lines_with_google(segments(), snapshot) == ["71"]
+    assert _error_color(float("nan")) == NO_VALUE_COLOR and _error_color(0.0) != NO_VALUE_COLOR  # missing is grey, 0 km/h is a colour

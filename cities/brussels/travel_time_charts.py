@@ -1,4 +1,6 @@
-"""Brussels "Travel Time": the travel time of road segments and connected sections, per source.
+"""Brussels "Travel Time" strips, and the "Route-Level Error" strips that reuse them.
+
+Travel time of road segments and connected sections, per source.
 
 Data and rules: travel_time.py. One strip per source (Google when it has values,
 Traffic Estimation Model, TabPFN when shown): each block is a segment, as wide
@@ -16,6 +18,10 @@ from cities.brussels import travel_time as tt
 from cities.brussels.charts import _show, _title
 from core.colors import LEGEND_RANGES, get_speed_color, speed_color_or
 
+# Absolute speed error (km/h), the one place to edit: upper limit, legend label and colour of each class,
+# green (small) to red (large). The blocks, the legend and the hover all read this list.
+ERROR_CLASSES = [(2, "0–2", "#00B050"), (4, "2–4", "#FFFF00"), (7, "4–7", "#FFA500"), (float("inf"), "≥7", "#FF0000")]
+
 NO_VALUE_COLOR = "#e5e7eb"
 SELECTION = "selection"
 
@@ -24,7 +30,8 @@ def render_travel_time(results_df: pd.DataFrame, tabpfn_speeds: dict[str, float]
     """results_df: the RUN's enriched snapshot; tabpfn_speeds: shown TabPFN speeds or None;
     selection: the RUN's (segment names, bus ids); key: unique per RUN result (widget ids)."""
     segments = tt.segment_table()
-    scope = _choose_scope(tt.bus_lines(segments), bool(selection and any(selection)), key)
+    codes = ([SELECTION] if selection and any(selection) else []) + tt.bus_lines(segments)
+    scope = _select("bru_travel_scope", "Segments", codes, lambda code: "Current selection" if code == SELECTION else f"Bus line {code}", key)
     scoped = tt.scope_segments(segments, selection, None if scope == SELECTION else scope)
     if scoped.empty:
         st.info("No segments selected.")
@@ -60,7 +67,7 @@ def render_travel_time(results_df: pd.DataFrame, tabpfn_speeds: dict[str, float]
     if not len(basis):
         st.info("No segment has a value from every source, so no total is shown.")
     _strips(table, sources, totals, sections)
-    st.markdown(_speed_legend(), unsafe_allow_html=True)
+    st.markdown(_legend("Speed (km/h)", [(get_speed_color(low), label) for low, label in LEGEND_RANGES], "no value"), unsafe_allow_html=True)
     if sections > 1 or parts:
         st.caption(
             "Σ is the sum over sections, not the time of one trip."
@@ -81,23 +88,17 @@ def _count(n: int, noun: str) -> str:
     return f"{n:,} {noun}" + ("" if n == 1 else "s")
 
 
-def _choose_scope(lines: list[str], has_selection: bool, key: str) -> str:
-    """Selection or one bus line; the choice survives a new RUN (the widget id changes with every result)."""
-    codes = ([SELECTION] if has_selection else []) + lines
-    saved = st.session_state.get("bru_travel_scope")
-    default = saved if saved in codes else codes[0]
-    widget = f"bru_travel_scope_{key}"
+def _select(name: str, label: str, codes: list[str], format_func, key: str) -> str:
+    """A selectbox whose choice survives a new RUN: its widget id changes with every result (key),
+    so the choice is remembered in session state under name."""
+    saved = st.session_state.get(name)
+    widget = f"{name}_{key}"
 
     def remember() -> None:
-        st.session_state["bru_travel_scope"] = st.session_state[widget]
+        st.session_state[name] = st.session_state[widget]
 
     return st.selectbox(
-        "Segments",
-        codes,
-        index=codes.index(default),
-        format_func=lambda code: "Current selection" if code == SELECTION else f"Bus line {code}",
-        key=widget,
-        on_change=remember,
+        label, codes, index=codes.index(saved if saved in codes else codes[0]), format_func=format_func, key=widget, on_change=remember
     )
 
 
@@ -117,7 +118,7 @@ def _strips(table: pd.DataFrame, sources: list[str], totals: dict[str, float], s
                     "route": table["route"],
                     "bus_lines": table["bus_lines"],
                     "length": table["length_m"].round().astype(int),
-                    "speed": table[f"speed_{k}"].map(lambda v: "no value" if pd.isna(v) else f"{v:.1f} km/h"),
+                    "speed": table[f"speed_{k}"].map(_speed_text),
                     "time": table[f"time_{k}"].map(tt.format_time),
                 }
             )
@@ -125,59 +126,73 @@ def _strips(table: pd.DataFrame, sources: list[str], totals: dict[str, float], s
         ],
         ignore_index=True,
     )
+    prefix = "Σ " if sections > 1 else ""
+    ends = pd.DataFrame({"source": labels, "label": [prefix + tt.format_time(totals.get(k, float("nan"))) for k in sources]})
+    tooltip = [
+        alt.Tooltip("street:N", title="Street"),
+        alt.Tooltip("route:N", title="Section"),
+        alt.Tooltip("bus_lines:N", title="Bus lines"),
+        alt.Tooltip("length:Q", title="Length (m)"),
+        alt.Tooltip("speed:N", title="Speed"),
+        alt.Tooltip("time:N", title="Travel time"),
+    ]
+    title = _title("Travel time per segment", "Block width = segment length · colour = speed · number at the end = total travel time")
+    _draw_strips(blocks, table, labels, tooltip, title, ends)
+
+
+def _speed_text(speed: float, missing: str = "no value") -> str:
+    return missing if pd.isna(speed) else f"{speed:.1f} km/h"
+
+
+def _draw_strips(blocks: pd.DataFrame, table: pd.DataFrame, labels: list[str], tooltip: list, title, ends: pd.DataFrame | None = None) -> None:
+    """Blocks (source, x0, x1, color, in_basis + tooltip fields) as one strip per source label.
+
+    ends: optional text (source, label) at the end of each strip; faded blocks are those with in_basis False.
+    """
     x_end = float(table["x1"].max())
     y = alt.Y("source:N", sort=labels, title=None, axis=alt.Axis(ticks=False, domain=False, labelFontSize=12, labelLimit=170), scale=alt.Scale(paddingInner=0.15))
-    rects = (
+    layers = (
         alt.Chart(blocks)
         .mark_rect(stroke="white", strokeWidth=0.5)
         .encode(
             x=alt.X(
                 "x0:Q",
                 title="Distance along the segments (km; gaps between sections are not to scale)",
-                scale=alt.Scale(domain=[0, x_end * 1.25], nice=False),
+                scale=alt.Scale(domain=[0, x_end * (1.25 if ends is not None else 1.02)], nice=False),
                 axis=alt.Axis(grid=False),
             ),
             x2="x1:Q",
             y=y,
             color=alt.Color("color:N", scale=None),
             opacity=alt.condition("datum.in_basis", alt.value(1), alt.value(0.3)),
-            tooltip=[
-                alt.Tooltip("street:N", title="Street"),
-                alt.Tooltip("route:N", title="Section"),
-                alt.Tooltip("bus_lines:N", title="Bus lines"),
-                alt.Tooltip("length:Q", title="Length (m)"),
-                alt.Tooltip("speed:N", title="Speed"),
-                alt.Tooltip("time:N", title="Travel time"),
-            ],
+            tooltip=tooltip,
         )
     )
-    prefix = "Σ " if sections > 1 else ""
-    ends = pd.DataFrame({"source": labels, "x": x_end, "label": [prefix + tt.format_time(totals.get(k, float("nan"))) for k in sources]})
-    text = (
-        alt.Chart(ends)
-        .mark_text(align="left", dx=6, fontSize=12, fontWeight="bold", color="#1F2937")
-        .encode(x=alt.X("x:Q"), y=alt.Y("source:N", sort=labels), text="label:N")
-    )
-    layers = rects + text
-    if sections > 1:  # section numbers above the first strip
+    if ends is not None:
+        layers += (
+            alt.Chart(ends.assign(x=x_end))
+            .mark_text(align="left", dx=6, fontSize=12, fontWeight="bold", color="#1F2937")
+            .encode(x=alt.X("x:Q"), y=alt.Y("source:N", sort=labels), text="label:N")
+        )
+    if table["section"].nunique() > 1:  # section numbers above the first strip
         centers = table.groupby("section").agg(x0=("x0", "min"), x1=("x1", "max")).reset_index()
-        numbers = (
+        layers += (
             alt.Chart(centers.assign(x=(centers["x0"] + centers["x1"]) / 2))
             .mark_text(baseline="bottom", fontSize=11, color="#6b7280", clip=False)
             .encode(x="x:Q", y=alt.value(-2), text="section:N")
         )
-        layers = layers + numbers
-    _show(layers.properties(height=alt.Step(34), title=_title("Travel time per segment", "Block width = segment length · colour = speed · number at the end = total travel time")))
+    _show(layers.properties(height=alt.Step(34), title=title))
 
 
-def _speed_legend() -> str:
-    """The maps' speed scale, as one small line."""
-    items = "".join(
+def _legend(title: str, items: list[tuple[str, str]], grey: str, ends: tuple[str, str] = ("", "")) -> str:
+    """One small legend line: (colour, label) swatches, optionally framed by words (ends), then what grey means."""
+    swatches = "".join(
         f"<span style='display:inline-flex;align-items:center;gap:4px;margin-right:12px;white-space:nowrap;'>"
-        f"<span style='width:14px;height:10px;border-radius:2px;background:{get_speed_color(low)};'></span>{label}</span>"
-        for low, label in LEGEND_RANGES
+        f"<span style='width:14px;height:10px;border-radius:2px;background:{color};'></span>{label}</span>"
+        for color, label in items
     )
-    return f"<div style='font-size:0.8rem;color:#6b7280;'>Speed (km/h): {items}<span>grey: no value</span></div>"
+    small, large = (f"<span style='margin:0 8px;'>{word}</span>" if word else "" for word in ends)
+    return f"<div style='font-size:0.8rem;color:#6b7280;margin-bottom:0.6rem;'>{title}: {small}{swatches}{large}<span style='margin-left:8px;'>grey: {grey}</span></div>"
 
 
 def _section_table(table: pd.DataFrame, sources: list[str], totals: dict[str, float], shared: int) -> None:
@@ -194,3 +209,62 @@ def _section_table(table: pd.DataFrame, sources: list[str], totals: dict[str, fl
         width="stretch",
         hide_index=True,
     )
+
+
+def _error_color(error: float) -> str:
+    return NO_VALUE_COLOR if pd.isna(error) else next(color for limit, _, color in ERROR_CLASSES if error < limit)
+
+
+def render_route_error(results_df: pd.DataFrame, tabpfn_speeds: dict[str, float] | None, key: str) -> None:
+    """One bus line with Google data: its whole route, coloured by |model - Google| where Google has a value."""
+    segments = tt.segment_table()
+    lines = tt.lines_with_google(segments, results_df)
+    if not lines:
+        st.caption("No Google speeds in this RUN, so no route error can be shown.")
+        return
+    line = _select("bru_error_line", "Bus line (with Google data)", lines, lambda code: f"Bus line {code}", key)
+    ordered, routes = tt.group_segments(tt.scope_segments(segments, ((), ()), line), [line])
+    table = tt.build_table(ordered, routes, results_df, tabpfn_speeds)
+    models = [k for k in ("primary", "tabpfn") if f"speed_{k}" in table.columns and table[f"speed_{k}"].notna().any()]
+
+    covered = table["speed_google"].notna()
+    st.caption(
+        f"Google covers {covered.sum()} of {_count(len(table), 'segment')} on bus line {line} "
+        f"({100 * table.loc[covered, 'length_m'].sum() / table['length_m'].sum():.0f}% of route length). "
+        "The other segments stay grey: without Google there is no error."
+    )
+    errors = {k: tt.speed_error(table, k) for k in models}
+    blocks = pd.concat(
+        [
+            pd.DataFrame(
+                {
+                    "source": cmp.source_label(k),
+                    "x0": table["x0"],
+                    "x1": table["x1"],
+                    "color": errors[k].map(_error_color),
+                    "in_basis": True,
+                    "street": table["segment_name"],
+                    "google": table["speed_google"].map(lambda v: _speed_text(v, "no Google data")),
+                    "model": table[f"speed_{k}"].map(_speed_text),
+                    "error": errors[k].map(lambda v: "—" if pd.isna(v) else f"{v:.1f} km/h"),
+                }
+            )
+            for k in models
+        ],
+        ignore_index=True,
+    )
+    tooltip = [
+        alt.Tooltip("street:N", title="Street"),
+        alt.Tooltip("google:N", title="Google speed"),
+        alt.Tooltip("model:N", title="Model speed"),
+        alt.Tooltip("error:N", title="Absolute error"),
+    ]
+    title = _title(
+        "Absolute speed error vs Google",
+        "Colour = |model speed − Google speed| in km/h (exact value on hover) · block width = segment length · grey = no Google data",
+    )
+    st.markdown(
+        _legend("Absolute error (km/h)", [(color, label) for _, label, color in ERROR_CLASSES], "no Google data", ("small", "large")),
+        unsafe_allow_html=True,
+    )
+    _draw_strips(blocks, table, [cmp.source_label(k) for k in models], tooltip, title)

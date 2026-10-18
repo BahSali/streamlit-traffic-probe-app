@@ -33,6 +33,7 @@ from cities.brussels.foundation_job import (
     render_foundation_status,
     sync_foundation,
 )
+from cities.brussels.live_traffic import render_live_traffic
 from cities.brussels.map_data import get_filter_options
 from cities.brussels.session import (
     apply_update,
@@ -179,6 +180,10 @@ def render_content(slots: dict, payload: dict, updating: bool = False) -> None:
             ratio=(10, 1),
         )
 
+    # Independent of the maps above and of the RUN's inputs; reloaded when a new RUN's result arrives.
+    with slots["live_traffic"].container():
+        render_live_traffic(payload.get("result_id", "idle"))
+
     with slots["analysis"].container():
         if has_results:
             with timed("brussels.charts"):
@@ -264,6 +269,9 @@ with settings_box:
 with content_box:
     page_header("Brussels")
     slots = {"diagnostics": st.empty(), "maps": st.empty()}
+    st.markdown("---")
+    st.markdown("### Live Traffic Overview")
+    slots["live_traffic"] = st.empty()
     st.markdown("---")
     st.markdown("### Performance Analysis")
     slots["analysis"] = st.empty()
