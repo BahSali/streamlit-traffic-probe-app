@@ -11,7 +11,7 @@ from pathlib import Path
 #       Performance Analysis charts/metrics, Data Preview and the CSV download.
 # False: all of those show the model's original estimates.
 # The model's original estimates are never overwritten in either mode.
-APPLY_DEMO_SPEED_CORRECTION = True
+APPLY_DEMO_SPEED_CORRECTION = False
 
 # ---------------------------------------------------------------------------
 # Google Routes monthly request limit (Brussels page)
